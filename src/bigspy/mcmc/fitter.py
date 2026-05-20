@@ -259,7 +259,7 @@ class MCMCFitter:
 
     def __init__(self, ssp_fits, specfit_result, sfh_model="delayed",
                  wave_range=(3600, 7400), emission_mask=None,
-                 use_jax=False):
+                 use_jax=True):
         self.ssp = SSPLibrary(ssp_fits, wave_range=wave_range)
         self._specfit = specfit_result
         self._sfh_model = sfh_model
@@ -293,11 +293,14 @@ class MCMCFitter:
         # Optionally build JAX Likelihood (for faster sampling)
         self._use_jax = use_jax
         if use_jax:
-            from .likelihood_jax import JAXLikelihood
-            self._likelihood_jax = JAXLikelihood(
-                self.ssp, self._wave_obs, self._flux_obs, self._error_obs,
-                self._obs_mask, ve, vd, self._dust,
-            )
+            try:
+                from .likelihood_jax import JAXLikelihood
+                self._likelihood_jax = JAXLikelihood(
+                    self.ssp, self._wave_obs, self._flux_obs, self._error_obs,
+                    self._obs_mask, ve, vd, self._dust,
+                )
+            except ImportError:
+                self._use_jax = False
     
     def run(self, n_live=400, chain_dir=None, priors=None,
             frac_remain=0.5, max_ncalls=None, dlogz=0.5,
