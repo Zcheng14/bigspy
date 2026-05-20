@@ -6,7 +6,6 @@ __pycache__/
 .pytest_cache/
 
 # Output
-out/
 out_notebook/
 *.ipynb_checkpoints/
 
@@ -21,6 +20,5 @@ out_notebook/
 Thumbs.db
 
 # Data (large files)
-*.pkl
-*.fits
 .sisyphus/
+out/chains_*/
