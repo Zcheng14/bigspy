@@ -13,9 +13,17 @@ from .sfh import DelayedExponentialSFH
 class MCMCResult:
     """Container for MCMC fitting results."""
     
-    def __init__(self, sampler):
+    def __init__(self, sampler, likelihood_np=None):
         self._sampler = sampler
+        self._likelihood_np = likelihood_np  # NumPy Likelihood for plotting/saving
         self.result = sampler.result  # Raw UltraNest result dict
+
+    @property
+    def _like(self):
+        """NumPy Likelihood for plotting/saving (falls back to sampler's like)."""
+        if self._likelihood_np is not None:
+            return self._likelihood_np
+        return self._like
     
     @property
     def bestfit(self):
@@ -51,7 +59,7 @@ class MCMCResult:
         import numpy as np
         
         best = self.bestfit
-        like = self._sampler.like
+        like = self._like
         
         # Build best-fit CSP
         logZ = best.get("logZsun", 0.0)
@@ -122,7 +130,7 @@ class MCMCResult:
         })
         import matplotlib.pyplot as plt
         import numpy as np
-        like = self._sampler.like
+        like = self._like
         best = self.bestfit
         sfh = DelayedExponentialSFH(**{k: v for k, v in best.items() if k != "logZsun"},
                                     age_universe=13.8)
@@ -176,7 +184,7 @@ class MCMCResult:
         })
         import matplotlib.pyplot as plt
         import numpy as np
-        like = self._sampler.like
+        like = self._like
         post = self.posterior
         names = self._sampler.param_names
 
@@ -340,7 +348,7 @@ class MCMCFitter:
         )
         
         self._sampler = sampler
-        return MCMCResult(sampler)
+        return MCMCResult(sampler, likelihood_np=self._likelihood)
     
     @property
     def likelihood(self):
