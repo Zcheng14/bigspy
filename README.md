@@ -27,7 +27,7 @@ specfit = sf.fit(
     flux=flux_obs,          # flux
     error=error_obs,        # uncertainty
     mask=mask_obs,          # bool, good pixels
-    z_sys=0.04,             # systemic redshift
+    z_sys=your_redshift,    # systemic redshift (user-supplied)
     mode="mode2",           # S/L non-parametric dust (default)
 )
 print(f"v_e = {specfit.ve[0]:.1f} ± {specfit.ve[1]:.1f} km/s")
@@ -74,7 +74,7 @@ print(f"log Z    = {mcmc_result.log_evidence:.2f}")
 
 | Method / Property | Description |
 |-------------------|-------------|
-| `MCMCFitter(ssp_fits, specfit_result, sfh_model, use_jax=False, ...)` | Set up MCMC. `use_jax=True` for JIT-compiled likelihood |
+| `MCMCFitter(ssp_fits, specfit_result, sfh_model, use_jax=True, ...)` | Set up MCMC. JAX JIT-accelerated by default |
 | `mc.run(n_live, chain_dir, priors=..., ...)` | Run UltraNest, return `MCMCResult` |
 | `result.bestfit` | Best-fit parameter dict |
 | `result.posterior` | Posterior samples `(N, n_params)` ndarray |
