@@ -326,6 +326,30 @@ fig = _corner(pc, labels=labels_c, truths=best_c,
               show_titles=True, title_fmt=".4f")
 fig.savefig(os.path.join(OUT_DIR, "figs", "06_corner_custom_sfh.png"),
             dpi=120, bbox_inches="tight")
+plt.close(fig)
+print("  → figs/06_corner_custom_sfh.png")
+
+# DelayTau SFH CI
+_cosmic = np.max(mc._likelihood.ssp.time) - mc._likelihood.ssp.time
+_n_use = min(200, len(pc))
+_idx = np.random.choice(len(pc), _n_use, replace=False)
+_sfh_idx_c = {n: i for i, n in enumerate(mc_custom._sampler.param_names) if n != "logZsun"}
+_sfr_grid_c = np.zeros((_n_use, len(_cosmic)))
+for k in range(_n_use):
+    _kw = {n: pc[_idx[k], j] for n, j in _sfh_idx_c.items()}
+    _sfr_grid_c[k] = DelayTauSFH(**_kw, age_universe=13.8).evaluate(mc._likelihood.ssp.time)
+_slo = np.percentile(_sfr_grid_c, 16, axis=0)
+_smed = np.percentile(_sfr_grid_c, 50, axis=0)
+_shi = np.percentile(_sfr_grid_c, 84, axis=0)
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.fill_between(_cosmic, _slo, _shi, color="b", alpha=0.2, label=r"$68\%$ CI")
+ax.plot(_cosmic, _smed, "b-", lw=1.5, label="Median")
+ax.set_xlabel(r"$\mathrm{Age\ of\ Universe\ (Gyr)}$")
+ax.set_ylabel(r"$\mathrm{SFR\ (arb.\ units)}$")
+ax.legend()
+fig.savefig(os.path.join(OUT_DIR, "figs", "06b_sfh_delaytau.png"), dpi=120, bbox_inches="tight")
+plt.close(fig)
+print("  → figs/06b_sfh_delaytau.png")
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  6b. Custom SFH — Double Power Law (3 params)                   ║
@@ -396,6 +420,28 @@ fig.savefig(os.path.join(OUT_DIR, "figs", "07_corner_dpl.png"),
             dpi=120, bbox_inches="tight")
 plt.close(fig)
 print("  → figs/07_corner_dpl.png")
+
+# DPL SFH CI
+_cosmic2 = np.max(mc._likelihood.ssp.time) - mc._likelihood.ssp.time
+_n_use2 = min(200, len(pd))
+_idx2 = np.random.choice(len(pd), _n_use2, replace=False)
+_sfh_idx_d = {n: i for i, n in enumerate(mc_dpl._sampler.param_names) if n != "logZsun"}
+_sfr_grid_d = np.zeros((_n_use2, len(_cosmic2)))
+for k in range(_n_use2):
+    _kw2 = {n: pd[_idx2[k], j] for n, j in _sfh_idx_d.items()}
+    _sfr_grid_d[k] = DoublePowerLawSFH(**_kw2, age_universe=13.8).evaluate(mc._likelihood.ssp.time)
+slo2 = np.percentile(_sfr_grid_d, 16, axis=0)
+smed2 = np.percentile(_sfr_grid_d, 50, axis=0)
+shi2 = np.percentile(_sfr_grid_d, 84, axis=0)
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.fill_between(_cosmic2, slo2, shi2, color="b", alpha=0.2, label=r"$68\%$ CI")
+ax.plot(_cosmic2, smed2, "b-", lw=1.5, label="Median")
+ax.set_xlabel(r"$\mathrm{Age\ of\ Universe\ (Gyr)}$")
+ax.set_ylabel(r"$\mathrm{SFR\ (arb.\ units)}$")
+ax.legend()
+fig.savefig(os.path.join(OUT_DIR, "figs", "07b_sfh_dpl.png"), dpi=120, bbox_inches="tight")
+plt.close(fig)
+print("  → figs/07b_sfh_dpl.png")
 
 # Model comparison
 print(f"\n  {'Model':<18s}  {'Np':>4s}  {'log Z':>10s}  {'ΔlogZ':>8s}")
