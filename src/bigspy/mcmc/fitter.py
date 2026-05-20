@@ -244,44 +244,52 @@ class MCMCFitter:
         SSP wavelength range (default: (3600, 7400)).
     emission_mask : list, optional
         Additional emission line regions to mask (default: uses SpecFit's mask).
+    use_jax : bool, optional
+        Use JAX-accelerated likelihood backend (default: False).
+        Requires ``jax`` and ``jax.numpy`` installed.
     """
-    
+
     def __init__(self, ssp_fits, specfit_result, sfh_model="delayed",
-                 wave_range=(3600, 7400), emission_mask=None):
+                 wave_range=(3600, 7400), emission_mask=None,
+                 use_jax=False):
         self.ssp = SSPLibrary(ssp_fits, wave_range=wave_range)
         self._specfit = specfit_result
         self._sfh_model = sfh_model
-        
+
         # Use preprocessed data from SpecFit (rest-frame, trimmed, MW corrected)
         self._wave_obs = np.asarray(specfit_result.wave_prep, dtype=float)
         self._flux_obs = np.asarray(specfit_result.flux_prep, dtype=float)
         self._error_obs = np.asarray(specfit_result.error_prep, dtype=float)
-        
+
         # Build mask: combine SpecFit mask + optional additional emission mask
         self._obs_mask = np.asarray(specfit_result.mask_prep, dtype=bool)
         if emission_mask is not None:
             from ...mask import build_emission_mask
             em = build_emission_mask(self._wave_obs, emission_mask)
             self._obs_mask = self._obs_mask & em
-        
-        # Normalize at 5500
-        i55 = np.argmin(np.abs(self._wave_obs - 5500))
-        norm = self._flux_obs[i55] if self._flux_obs[i55] > 0 else 1.0
-        self._flux_n = self._flux_obs / norm
-        self._error_n = self._error_obs / norm
-        
+
         # Build dust from SpecFit
         p1 = getattr(specfit_result, 'p1', 0.0)
         p2 = getattr(specfit_result, 'p2', 0.0)
         self._dust = DustAttenuation.from_mode2(self.ssp.wave, p1, p2)
-        
-        # Build likelihood
+
         ve = specfit_result.ve[0]
         vd = specfit_result.vd[0]
+
+        # Always build NumPy Likelihood (for plotting, backward compat)
         self._likelihood = Likelihood(
-            self.ssp, self._wave_obs, self._flux_n, self._error_n,
-            self._obs_mask, ve, vd, self._dust
+            self.ssp, self._wave_obs, self._flux_obs, self._error_obs,
+            self._obs_mask, ve, vd, self._dust,
         )
+
+        # Optionally build JAX Likelihood (for faster sampling)
+        self._use_jax = use_jax
+        if use_jax:
+            from .likelihood_jax import JAXLikelihood
+            self._likelihood_jax = JAXLikelihood(
+                self.ssp, self._wave_obs, self._flux_obs, self._error_obs,
+                self._obs_mask, ve, vd, self._dust,
+            )
     
     def run(self, n_live=400, chain_dir=None, priors=None,
             frac_remain=0.5, max_ncalls=None, dlogz=0.5,
@@ -313,9 +321,11 @@ class MCMCFitter:
         """
         if chain_dir is None:
             raise ValueError("chain_dir is required")
-        
+
+        likelihood = self._likelihood_jax if self._use_jax else self._likelihood
+
         sampler = UltraNestSampler(
-            self._likelihood, chain_dir, self._sfh_model, priors=priors
+            likelihood, chain_dir, self._sfh_model, priors=priors
         )
         
         sampler.run(
@@ -334,4 +344,5 @@ class MCMCFitter:
     
     @property
     def likelihood(self):
+        """NumPy Likelihood (for plotting and inspection)."""
         return self._likelihood
