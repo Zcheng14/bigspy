@@ -15,6 +15,11 @@ pip install -e .
 
 Requires Python ≥ 3.9. Dependencies: `numpy`, `scipy`, `astropy`, `lmfit`, `ultranest`, `matplotlib`, `corner`.
 
+Optional for JAX acceleration: `jax`, `jaxlib`. Installed separately:
+```bash
+pip install jax jaxlib
+```
+
 ## Quick Start
 
 ```python
@@ -39,6 +44,7 @@ mc = MCMCFitter(
     specfit_result=specfit,
     sfh_model="delayed",              # "delayed" or custom SFHBase subclass
     wave_range=(3600, 7400),
+    use_jax=False,                     # Set True for JAX JIT acceleration
 )
 mcmc_result = mc.run(
     n_live=400,
@@ -73,7 +79,7 @@ print(f"log Z    = {mcmc_result.log_evidence:.2f}")
 
 | Method / Property | Description |
 |-------------------|-------------|
-| `MCMCFitter(ssp_fits, specfit_result, sfh_model, ...)` | Set up MCMC |
+| `MCMCFitter(ssp_fits, specfit_result, sfh_model, use_jax=False, ...)` | Set up MCMC. `use_jax=True` for JIT-compiled likelihood |
 | `mc.run(n_live, chain_dir, priors=..., ...)` | Run UltraNest, return `MCMCResult` |
 | `result.bestfit` | Best-fit parameter dict |
 | `result.posterior` | Posterior samples `(N, n_params)` ndarray |
@@ -170,6 +176,26 @@ Required interface: `n_params`, `param_names`, `default_priors`, `__init__(**par
 |------|--------|-------------|
 | Mode 1 | `"mode1"` | Calzetti et al. (2000) attenuation curve, fits single parameter `E(B−V)` |
 | Mode 2 | `"mode2"` | S/L (Smooth/Line) non-parametric dust curve. Separates smooth stellar continuum from emission lines, fits quadratic polynomial `A_λ − A_V = p1·(x−xv) + p2·(x²−xv²)` where `x = 10⁴/λ`. Returns S/L data points (`_dust_data_wave`, `_dust_data_A`) plus polynomial fit parameters. (default) |
+
+## JAX Acceleration
+
+Add `use_jax=True` for JIT-compiled likelihood evaluation (12–80× faster on CPU):
+
+```python
+mc = MCMCFitter(..., use_jax=True)
+mc.run(n_live=400, chain_dir="out/chains")
+```
+
+| Batch size N | NumPy | JAX JIT | Speedup |
+|-------------|-------|---------|---------|
+| 10 | 0.10 s | 0.008 s | 12× |
+| 50 | 0.27 s | 0.011 s | 25× |
+| 200 | 1.02 s | 0.017 s | 61× |
+| 500 | 3.12 s | 0.039 s | 80× |
+| 1000 | 5.05 s | 0.076 s | 66× |
+
+Numerical agreement: Δχ²/χ² < 10⁻³. The NumPy backend is retained for plotting.  
+JAX demo: `python example/run_bigspy_jax.py` or `example/bigspy_demo_jax.ipynb`.
 
 ## Running the Demo
 
