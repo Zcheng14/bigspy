@@ -464,7 +464,8 @@ def run_mode2(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
         ebv2 = ebv_m1
 
     return {"p1": p1, "p2": p2, "ebv": ebv2, "chi2r": best_redchi,
-            "slr_flux": slr_flux_norm}
+            "slr_flux": slr_flux_norm,
+            "dust_wave": wave_c[ok], "dust_A": Fr[ok]}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -593,6 +594,11 @@ class SpecFitResult:
         m1_dust = fit_dict.get("mode1_dust")
         self._dust_curve = m2_dust if m2_dust is not None else m1_dust
 
+        # Noisy dust data points from S/L method (Mode2 only)
+        m2 = fit_dict.get("mode2_result", {})
+        self._dust_data_wave = m2.get("dust_wave", None)
+        self._dust_data_A    = m2.get("dust_A", None)
+
     @property
     def bestfit(self):
         return self._bestfit
@@ -685,13 +691,26 @@ class SpecFitResult:
             "font.size": 12,
         })
         import matplotlib.pyplot as plt
-        if self._dust_curve is None:
-            return
+        import numpy as np
+
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(self._dust_wave, self._dust_curve, 'b-', lw=1.5)
-        ax.axhline(1.0, color='k', ls='--', lw=0.8, label=r'$A_\lambda = 0$')
+
+        # Noisy dust data from S/L method (A_λ in magnitudes)
+        if self._dust_data_wave is not None and self._dust_data_A is not None:
+            ax.plot(self._dust_data_wave, self._dust_data_A, 'r-', lw=0.5, alpha=0.7,
+                    label=r'$\mathrm{S/L\ dust\ data}$')
+
+        # Smooth polynomial fit: A_λ = p1*(x - xv) + p2*(x^2 - xv^2)
+        w_smooth = np.linspace(3600, 7400, 500)
+        x_smooth = 10000.0 / w_smooth
+        xv = 10000.0 / 5500.0
+        A_smooth = self.p1 * (x_smooth - xv) + self.p2 * (x_smooth**2 - xv**2)
+        ax.plot(w_smooth, A_smooth, 'b-', lw=1.5,
+                label=r'$\mathrm{Polynomial\ fit}$')
+
+        ax.axhline(0.0, color='k', ls='--', lw=0.8)
         ax.set_xlabel(r'$\lambda\ (\mathrm{\AA})$')
-        ax.set_ylabel(r'$\mathrm{Dust\ attenuation\ factor}$')
+        ax.set_ylabel(r'$A_\lambda - A_V\ \mathrm{(mag)}$')
         ax.set_title(
             rf'$\mathrm{{Dust\ Curve:\ }} p_1 = {self.p1:.4f},\ p_2 = {self.p2:.4f}$'
         )

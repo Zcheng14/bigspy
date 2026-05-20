@@ -108,10 +108,15 @@ ax1.set_xlabel(r"$\lambda\ (\mathrm{\AA})$"); ax1.set_ylabel(r"$F_\lambda$")
 ax1.legend(); ax1.set_title("SpecFit Result")
 
 w_dust = np.linspace(3600, 7400, 500)
-ax2.plot(w_dust, specfit.dust_curve(w_dust), "b-", lw=1.5)
-ax2.axhline(1.0, color="k", ls="--", lw=0.8)
-ax2.set_xlabel(r"$\lambda\ (\mathrm{\AA})$"); ax2.set_ylabel("Dust Factor")
+x_dust = 10000.0 / w_dust
+xv = 10000.0 / 5500.0
+A_dust = specfit.p1 * (x_dust - xv) + specfit.p2 * (x_dust**2 - xv**2)
+ax2.plot(w_dust, A_dust, "b-", lw=1.5, label="Polynomial fit")
+ax2.axhline(0.0, color="k", ls="--", lw=0.8)
+ax2.set_xlabel(r"$\lambda\ (\mathrm{\AA})$")
+ax2.set_ylabel(r"$A_\lambda - A_V\ \mathrm{(mag)}$")
 ax2.set_title(f"Dust Curve:  p1={specfit.p1:.4f}, p2={specfit.p2:.4f}")
+ax2.legend()
 plt.tight_layout()
 fig.savefig(os.path.join(OUT_DIR, "figs", "02_specfit.png"),
             dpi=120, bbox_inches="tight")
