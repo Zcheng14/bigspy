@@ -62,11 +62,12 @@ print(f"log Z    = {mcmc_result.log_evidence:.2f}")
 | `sf.fit(wave, flux, error, mask, z_sys, mode, ...)` | Run fitting, return `SpecFitResult` |
 | `result.ve`, `result.vd` | Line-of-sight velocity & dispersion `(value, error)` in km/s |
 | `result.ebv` | E(B−V) colour excess `(value, error)` |
-| `result.p1`, `result.p2` | Mode 2 dust curve parameters |
+| `result.p1`, `result.p2` | Mode 2 dust polynomial coefficients |
 | `result.wave_prep`, `result.flux_prep`, `result.error_prep`, `result.mask_prep` | Preprocessed spectrum arrays |
-| `result.dust_curve(wave)` | Callable dust attenuation factor |
+| `result.dust_curve(wave)` | Callable dust attenuation factor (10^(−0.4 A_λ)) |
 | `result.save(path)` | Save to FITS |
-| `result.plot_fit(path)`, `result.plot_dust(path)` | Save diagnostic plots |
+| `result.plot_fit(path)` | Fit spectrum + dust curve (A_λ − A_V, mag) |
+| `result.plot_dust(path)` | Standalone dust plot: S/L data (scatter) + polynomial fit (line) |
 
 ### MCMCFitter
 
@@ -167,8 +168,8 @@ Required interface: `n_params`, `param_names`, `default_priors`, `__init__(**par
 
 | Mode | String | Description |
 |------|--------|-------------|
-| Mode 1 | `"mode1"` | Calzetti et al. (2000) attenuation curve |
-| Mode 2 | `"mode2"` | S/L (Smooth/Line) non-parametric dust curve (default) |
+| Mode 1 | `"mode1"` | Calzetti et al. (2000) attenuation curve, fits single parameter `E(B−V)` |
+| Mode 2 | `"mode2"` | S/L (Smooth/Line) non-parametric dust curve. Separates smooth stellar continuum from emission lines, fits quadratic polynomial `A_λ − A_V = p1·(x−xv) + p2·(x²−xv²)` where `x = 10⁴/λ`. Returns S/L data points (`_dust_data_wave`, `_dust_data_A`) plus polynomial fit parameters. (default) |
 
 ## Running the Demo
 
