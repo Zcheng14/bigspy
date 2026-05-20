@@ -22,3 +22,4 @@ Thumbs.db
 # Data (large files)
 .sisyphus/
 out/chains_*/
+PLAN.md
