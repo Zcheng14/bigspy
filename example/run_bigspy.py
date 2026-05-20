@@ -111,17 +111,24 @@ w_dust = np.linspace(3600, 7400, 500)
 x_dust = 10000.0 / w_dust
 xv = 10000.0 / 5500.0
 A_dust = specfit.p1 * (x_dust - xv) + specfit.p2 * (x_dust**2 - xv**2)
+if specfit._dust_data_wave is not None:
+    ax2.scatter(specfit._dust_data_wave, specfit._dust_data_A, s=1, c='gray', alpha=0.4,
+                rasterized=True, label="S/L data")
 ax2.plot(w_dust, A_dust, "b-", lw=1.5, label="Polynomial fit")
 ax2.axhline(0.0, color="k", ls="--", lw=0.8)
 ax2.set_xlabel(r"$\lambda\ (\mathrm{\AA})$")
 ax2.set_ylabel(r"$A_\lambda - A_V\ \mathrm{(mag)}$")
 ax2.set_title(f"Dust Curve:  p1={specfit.p1:.4f}, p2={specfit.p2:.4f}")
-ax2.legend()
+ax2.legend(fontsize=8)
 plt.tight_layout()
 fig.savefig(os.path.join(OUT_DIR, "figs", "02_specfit.png"),
             dpi=120, bbox_inches="tight")
 plt.close(fig)
 print("  → figs/02_specfit.png")
+
+# Separate dust curve plot
+specfit.plot_dust(os.path.join(OUT_DIR, "figs", "02b_dust_curve.png"))
+print("  → figs/02b_dust_curve.png")
 
 
 # ╔══════════════════════════════════════════════════════════════════╗

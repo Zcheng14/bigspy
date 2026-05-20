@@ -697,8 +697,8 @@ class SpecFitResult:
 
         # Noisy dust data from S/L method (A_λ in magnitudes)
         if self._dust_data_wave is not None and self._dust_data_A is not None:
-            ax.plot(self._dust_data_wave, self._dust_data_A, 'r-', lw=0.5, alpha=0.7,
-                    label=r'$\mathrm{S/L\ dust\ data}$')
+            ax.scatter(self._dust_data_wave, self._dust_data_A, s=2, c='gray', alpha=0.5,
+                       label=r'$\mathrm{S/L\ data}$', rasterized=True)
 
         # Smooth polynomial fit: A_λ = p1*(x - xv) + p2*(x^2 - xv^2)
         w_smooth = np.linspace(3600, 7400, 500)
