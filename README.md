@@ -123,7 +123,7 @@ mc.run(
 
 **Built-in**: `DelayedExponentialSFH(t0, tau, age_universe=13.8)`
 
-$$\mathrm{SFR}(t) = \left\{ \begin{array}{ll} 0 & t \le t_0 \\ (t - t_0) \; e^{-(t - t_0)/\tau} & t > t_0 \end{array} \right.$$
+$$\mathrm{SFR}(t) = \max(0,\, t - t_0) \cdot \exp\!\Big(-\frac{\max(0,\, t - t_0)}{\tau}\Big)$$
 
 where $t$ is cosmic time (0 = Big Bang, max = present).
 
