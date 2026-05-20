@@ -44,7 +44,7 @@ mc = MCMCFitter(
     specfit_result=specfit,
     sfh_model="delayed",              # "delayed" or custom SFHBase subclass
     wave_range=(3600, 7400),
-    use_jax=False,                     # Set True for JAX JIT acceleration
+    use_jax=True,                     # JAX JIT acceleration (default; auto-fallback to NumPy)
 )
 mcmc_result = mc.run(
     n_live=400,
