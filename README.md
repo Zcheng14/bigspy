@@ -185,4 +185,11 @@ Both walk through the full pipeline: load data → SpecFit → MCMC → visualiz
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
+
+## References
+
+This code implements the methodology described in:
+
+- Zhou et al. (2019), MNRAS, 485, 5256 — [2019MNRAS.485.5256Z](https://ui.adsabs.harvard.edu/abs/2019MNRAS.485.5256Z)
+- Li et al. (2020), ApJ, 896, 38 — [2020ApJ...896...38L](https://ui.adsabs.harvard.edu/abs/2020ApJ...896...38L)
