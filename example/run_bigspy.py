@@ -326,6 +326,88 @@ fig = _corner(pc, labels=labels_c, truths=best_c,
               show_titles=True, title_fmt=".4f")
 fig.savefig(os.path.join(OUT_DIR, "figs", "06_corner_custom_sfh.png"),
             dpi=120, bbox_inches="tight")
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  6b. Custom SFH — Double Power Law (3 params)                   ║
+# ╚══════════════════════════════════════════════════════════════════╝
+print("\n" + "-" * 40)
+print("  6b. Custom SFH — Double Power Law (3 params)")
+print("-" * 40)
+
+
+class DoublePowerLawSFH(SFHBase):
+    """SFR(t) = 1 / ((t/τ)^α + (t/τ)^(−β)),  free params: τ, α, β"""
+    n_params = 3
+    param_names = ["tau", "alpha", "beta"]
+    default_priors = {
+        "tau":   LogUniformPrior(0.1, 13.0),
+        "alpha": LogUniformPrior(0.1, 10.0),
+        "beta":  LogUniformPrior(0.1, 10.0),
+    }
+
+    def __init__(self, tau, alpha, beta, age_universe=13.8):
+        self.tau   = float(tau)
+        self.alpha = float(alpha)
+        self.beta  = float(beta)
+        self.age_universe = float(age_universe)
+
+    def evaluate(self, timegrid):
+        t = np.max(timegrid) - timegrid
+        t = np.where(t <= 0, 1e-10, t)
+        x = t / self.tau
+        sfr = 1.0 / (x**self.alpha + x**(-self.beta))
+        sfr[timegrid > self.age_universe] = 0.0
+        return sfr
+
+
+mc_dpl = MCMCFitter(
+    ssp_fits=SSP_FILE, specfit_result=specfit,
+    sfh_model=DoublePowerLawSFH, wave_range=(3600, 7400),
+)
+
+chain_dpl = os.path.join(OUT_DIR, "chains_dpl")
+res_dpl = mc_dpl.run(
+    n_live=200, chain_dir=chain_dpl,
+    priors={
+        "logZsun": UniformPrior(-2.5, 0.5),
+        "tau":     LogUniformPrior(0.1, 13.0),
+        "alpha":   LogUniformPrior(0.1, 10.0),
+        "beta":    LogUniformPrior(0.1, 10.0),
+    },
+)
+
+pd = res_dpl.posterior
+print(f"  Active params: {mc_dpl._sampler.param_names}  (N={len(pd)})")
+for i, n in enumerate(mc_dpl._sampler.param_names):
+    lo, med, hi = np.percentile(pd[:, i], [16, 50, 84])
+    print(f"  {n:10s} = {med:.4f}  [{lo:.4f}, {hi:.4f}]")
+print(f"\n  log Z = {res_dpl.log_evidence:.2f}")
+
+# DPL corner plot
+_names_d = mc_dpl._sampler.param_names
+_label_map_d = {"logZsun": r"$\log(Z/Z_\odot)$", "tau": r"$\tau$ (Gyr)",
+                "alpha": r"$\alpha$", "beta": r"$\beta$"}
+labels_d = [_label_map_d.get(n, n) for n in _names_d]
+best_d = [res_dpl.bestfit[n] for n in _names_d]
+
+fig = _corner(pd, labels=labels_d, truths=best_d,
+              quantiles=[0.16, 0.5, 0.84], show_titles=True, title_fmt=".4f")
+fig.savefig(os.path.join(OUT_DIR, "figs", "07_corner_dpl.png"),
+            dpi=120, bbox_inches="tight")
+plt.close(fig)
+print("  → figs/07_corner_dpl.png")
+
+# Model comparison
+print(f"\n  {'Model':<18s}  {'Np':>4s}  {'log Z':>10s}  {'ΔlogZ':>8s}")
+print("  " + "-" * 44)
+for name, np_, lz in [
+    ("DelayedExp", 3, mcmc_result.log_evidence),
+    ("DelayTau",   2, res_custom.log_evidence),
+    ("DPL",        4, res_dpl.log_evidence),
+]:
+    dlz = lz - mcmc_result.log_evidence
+    print(f"  {name:<18s}  {np_:>4d}  {lz:>10.2f}  {dlz:>+8.1f}")
+
 plt.close(fig)
 print("  → figs/06_corner_custom_sfh.png")
 
