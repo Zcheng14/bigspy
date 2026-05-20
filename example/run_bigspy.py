@@ -28,7 +28,7 @@ CHAIN_DIR = os.path.join(OUT_DIR, "chains_manga-7443")
 os.makedirs(os.path.join(OUT_DIR, "data"), exist_ok=True)
 os.makedirs(os.path.join(OUT_DIR, "figs"), exist_ok=True)
 
-N_LIVE = 200      # UltraNest live points (more = more accurate, slower)
+N_LIVE = 400      # UltraNest live points (more = more accurate, slower)
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -453,9 +453,6 @@ for name, np_, lz in [
 ]:
     dlz = lz - mcmc_result.log_evidence
     print(f"  {name:<18s}  {np_:>4d}  {lz:>10.2f}  {dlz:>+8.1f}")
-
-plt.close(fig)
-print("  → figs/06_corner_custom_sfh.png")
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
