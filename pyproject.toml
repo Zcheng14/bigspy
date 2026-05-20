@@ -28,6 +28,8 @@ dependencies = [
     "ultranest>=3.6",
     "matplotlib>=3.5",
     "corner>=2.2",
+    "jax>=0.4",
+    "jaxlib>=0.4",
 ]
 
 [project.optional-dependencies]
