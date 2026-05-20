@@ -189,16 +189,17 @@ mc.run(n_live=400, chain_dir="out/chains")
 | 500 | 3.12 s | 0.039 s | 80× |
 | 1000 | 5.05 s | 0.076 s | 66× |
 
-Numerical agreement: Δχ²/χ² < 10⁻³. The NumPy backend is retained for plotting.  
-JAX demo: `python example/run_bigspy_jax.py` or `example/bigspy_demo_jax.ipynb`.
+Numerical agreement: Δχ²/χ² < 10⁻³. The NumPy backend is retained for plotting.
 
 ## Running the Demo
 
 ```bash
-# Command-line script
-python example/run_bigspy.py
+# JAX-accelerated (default)
+python example/run_bigspy_jax.py
+jupyter notebook example/bigspy_demo_jax.ipynb
 
-# Jupyter notebook
+# NumPy-only fallback
+python example/run_bigspy.py
 jupyter notebook example/bigspy_demo.ipynb
 ```
 
