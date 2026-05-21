@@ -15,25 +15,18 @@ from jax import jit, vmap
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Helper: build convolution matrix (run once in __init__)
+#  Helper: build convolution kernel (run once in __init__)
 # ═══════════════════════════════════════════════════════════════════
 
-def _build_conv_matrix(n_pix, sigma_pix):
-    """Pre-compute Gaussian convolution matrix (NumPy, run once)."""
+def _build_conv_kernel(sigma_pix):
+    """Pre-compute Gaussian convolution kernel (1D, ~30 elements)."""
     if sigma_pix <= 0:
-        return np.eye(n_pix)
+        return np.array([1.0])
     khalf = round(4 * sigma_pix + 3)
     xx = np.arange(khalf * 2 + 1) - khalf
     kernel = np.exp(-xx ** 2 / (2 * sigma_pix ** 2))
     kernel /= kernel.sum()
-    K = np.zeros((n_pix, n_pix))
-    offset = khalf
-    for i in range(len(kernel)):
-        for j in range(n_pix):
-            src = j + i - offset
-            if 0 <= src < n_pix:
-                K[j, src] += kernel[i]
-    return K
+    return kernel
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -56,9 +49,9 @@ def _compute_sfh_weights(sfh_class, sfh_params_2d, time_grid, dt):
 @jit
 def compute_chi2_batch_jax(
     logZ_arr, sfh_weights, spec_3d, metal_log_grid,
-    conv_matrix, dust_curve, ssp_wave,
+    conv_kernel, dust_curve, ssp_wave,
     obs_wave, obs_flux, obs_err, obs_mask,
-    nr_indices,  # tuple of ints for 5500 normalization region
+    nr_indices,
 ):
     """JIT-compiled batch chi-squared computation.
 
@@ -85,7 +78,7 @@ def compute_chi2_batch_jax(
     csp = (1.0 - f[:, None]) * csp_lo + f[:, None] * csp_hi  # (N, n_wave_ssp)
 
     # ── 2. Velocity broadening ─────────────────────────────────
-    csp = jnp.dot(csp, conv_matrix.T)  # (N, n_wave_ssp)
+    csp = vmap(lambda s: jnp.convolve(s, conv_kernel, mode="same"))(csp)
 
     # ── 3. Normalize at 5500 ────────────────────────────────────
     csp_nr = csp[:, nr_indices]  # (N, n_nr) — integer indexing is JIT-safe
@@ -142,9 +135,7 @@ class JAXLikelihood:
 
         # ── Pre-compute everything that doesn't depend on parameters ──
         sigma_pix = vd / velscale if vd > 0 else 0.0
-        self._conv_matrix_jax = jnp.asarray(
-            np.asarray(_build_conv_matrix(len(ssp.wave), sigma_pix), dtype=np.float64)
-        )
+        self._conv_kernel_jax = jnp.asarray(_build_conv_kernel(sigma_pix))
         self._dust_curve_jax = jnp.asarray(np.asarray(dust._curve, dtype=np.float64))
         self._spec_3d_jax = jnp.asarray(np.asarray(ssp._spec, dtype=np.float64))
         self._ssp_wave_jax = jnp.asarray(np.asarray(ssp.wave, dtype=np.float64))
@@ -199,7 +190,7 @@ class JAXLikelihood:
             jnp.asarray(sfh_weights),
             self._spec_3d_jax,
             self._metal_log_grid_jax,
-            self._conv_matrix_jax,
+            self._conv_kernel_jax,
             self._dust_curve_jax,
             self._ssp_wave_jax,
             self._obs_wave_jax,
