@@ -216,8 +216,11 @@ MIT. See [LICENSE](LICENSE).
 
 **Related work:**
 
-- Zhou S., et al., 2020, MNRAS, 497, 4753 — [2020MNRAS.497.4753Z](https://ui.adsabs.harvard.edu/abs/2020MNRAS.497.4753Z)
-- Zhou S., et al., 2021, ApJ, 916, 38 — [2021ApJ...916...38Z](https://ui.adsabs.harvard.edu/abs/2021ApJ...916...38Z)
-- Li N., et al., 2021, ApJ, 917, 72 — [2021ApJ...917...72L](https://ui.adsabs.harvard.edu/abs/2021ApJ...917...72L)
-- Zhou S., et al., 2023, ApJ, 957, 75 — [2023ApJ...957...75Z](https://ui.adsabs.harvard.edu/abs/2023ApJ...957...75Z)
-- Ge J., et al., 2025, RAA, 25, 5017 — [2025RAA....25f5017G](https://ui.adsabs.harvard.edu/abs/2025RAA....25f5017G)
+- Cheng Z., Li C., Li N., Yan R., Mo H., 2024, ApJ, 961, 216 — *"Post-starburst Galaxies in SDSS-IV MaNGA: Two Broad Categories of Evolutionary Pathways"* — [2024ApJ...961..216C](https://ui.adsabs.harvard.edu/abs/2024ApJ...961..216C)
+- Guo R., Li C., Zhou S., Li N., Jing T., Cheng Z., 2025, RAA, 25, 5017 — *"Mapping Dust Attenuation at Kiloparsec Scales. II. Attenuation Curves from Near-ultraviolet to Near-infrared"* — [2025RAA....25f5017G](https://ui.adsabs.harvard.edu/abs/2025RAA....25f5017G)
+- Jing T., Li C., 2024, ApJ, 975, 17 — *"On the Origin of Quenched but Gas-rich Regions at Kiloparsec Scales in Nearby Galaxies"* — [2024ApJ...975...17J](https://ui.adsabs.harvard.edu/abs/2024ApJ...975...17J)
+- Li N., Li C., Mo H., Zhou S., Liang F., Boquien M., Drory N., Fernández-Trincado J. G., Greener M., Riffel R., 2021, ApJ, 917, 72 — *"Estimating Dust Attenuation From Galactic Spectra. II. Stellar and Gas Attenuation in Star-forming and Diffuse Ionized Gas Regions in MaNGA"* — [2021ApJ...917...72L](https://ui.adsabs.harvard.edu/abs/2021ApJ...917...72L)
+- Li N., Li C., 2023, ChPhB, 32, 9801 — *"Measuring stellar populations, dust attenuation and ionized gas at kpc scales in 10010 nearby galaxies using the integral field spectroscopy from MaNGA"* — [2023ChPhB..32c9801L](https://ui.adsabs.harvard.edu/abs/2023ChPhB..32c9801L)
+- Li N., Li C., 2024, ApJ, 975, 234 — *"Estimating Dust Attenuation from Galactic Spectra. III. Radial Variations of Dust Attenuation Scaling Relations in MaNGA Galaxies"* — [2024ApJ...975..234L](https://ui.adsabs.harvard.edu/abs/2024ApJ...975..234L)
+- Zhou S., Li C., Hao C.-N., Guo R., Mo H., Xia X., 2021, ApJ, 916, 38 — *"Star Formation Histories of Massive Red Spiral Galaxies in the Local Universe"* — [2021ApJ...916...38Z](https://ui.adsabs.harvard.edu/abs/2021ApJ...916...38Z)
+- Zhou S., Li C., Li N., Mo H., Yan R., Eracleous M., Molina M., Gronwall C., Ajgaonkar N., Cheng Z., Guo R., 2023, ApJ, 957, 75 — *"Mapping Dust Attenuation and the 2175 Å Bump at Kiloparsec Scales in Nearby Galaxies"* — [2023ApJ...957...75Z](https://ui.adsabs.harvard.edu/abs/2023ApJ...957...75Z)
