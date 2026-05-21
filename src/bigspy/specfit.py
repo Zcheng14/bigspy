@@ -730,7 +730,8 @@ class SpecFit:
         self._pca, self._wave_temp, self._velscale = load_pca_templates(pca_fits)
 
     def fit(self, wave=None, flux=None, error=None, mask=None, z_sys=None,
-            mode="mode2", emission_mask=None, neig=None, observed_fits=None):
+            mode="mode2", emission_mask=None, neig=None, observed_fits=None,
+            ebv_mw=0.0):
         """Fit observed spectrum.
 
         Parameters
@@ -749,6 +750,8 @@ class SpecFit:
             Number of PCA components to use (default: FIT_NEIG=10).
         observed_fits : str, optional
             Path to FITS file with WAVE/FLUX/ERROR extensions.
+        ebv_mw : float, optional
+            Galactic foreground E(B-V) for MW extinction correction (default 0).
 
         Returns
         -------
@@ -785,7 +788,7 @@ class SpecFit:
 
         data = {
             "z": float(z_sys),
-            "ebv_mw": 0.0,
+            "ebv_mw": float(ebv_mw),
             "wave_obs": np.asarray(wave, dtype=float),
             "flux_obs": np.asarray(flux, dtype=float),
             "mask_obs": mask,

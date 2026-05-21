@@ -83,6 +83,7 @@ specfit = sf.fit(
     mask=data["mask_obs"],
     z_sys=data["z"],
     mode="mode2",
+    ebv_mw=data["ebv_mw"],
 )
 t1 = time.perf_counter()
 
