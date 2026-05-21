@@ -208,8 +208,16 @@ MIT. See [LICENSE](LICENSE).
 
 ## References
 
-This code implements the methodology described in:
+**If you use this code, please cite:**
 
 - Zhou S., Mo H. J., Li C., et al., 2019, MNRAS, 485, 5256 — *"SDSS-IV MaNGA: stellar initial mass function variation inferred from Bayesian analysis of the integral field spectroscopy of early-type galaxies"* — [2019MNRAS.485.5256Z](https://ui.adsabs.harvard.edu/abs/2019MNRAS.485.5256Z)
 - Li N., Li C., Mo H. J., Hu J., Zhou S., Du C., 2020, ApJ, 896, 38 — *"Estimating Dust Attenuation from Galactic Spectra. I. Methodology and Tests"* — [2020ApJ...896...38L](https://ui.adsabs.harvard.edu/abs/2020ApJ...896...38L)
 - Buchner J., 2021, JOSS, 6(60), 3001 — *"UltraNest — a robust, general purpose Bayesian inference engine"* — [10.21105/joss.03001](https://doi.org/10.21105/joss.03001)
+
+**Related work:**
+
+- Zhou S., et al., 2020, MNRAS, 497, 4753 — [2020MNRAS.497.4753Z](https://ui.adsabs.harvard.edu/abs/2020MNRAS.497.4753Z)
+- Zhou S., et al., 2021, ApJ, 916, 38 — [2021ApJ...916...38Z](https://ui.adsabs.harvard.edu/abs/2021ApJ...916...38Z)
+- Li N., et al., 2021, ApJ, 917, 72 — [2021ApJ...917...72L](https://ui.adsabs.harvard.edu/abs/2021ApJ...917...72L)
+- Zhou S., et al., 2023, ApJ, 957, 75 — [2023ApJ...957...75Z](https://ui.adsabs.harvard.edu/abs/2023ApJ...957...75Z)
+- Ge J., et al., 2025, RAA, 25, 5017 — [2025RAA....25f5017G](https://ui.adsabs.harvard.edu/abs/2025RAA....25f5017G)
