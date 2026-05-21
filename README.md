@@ -56,7 +56,7 @@ print(f"log Z    = {mcmc_result.log_evidence:.2f}")
 
 ## API Reference
 
-### SpecFit
+### SpecFit — kinematics + dust
 
 | Method / Property | Description |
 |-------------------|-------------|
@@ -71,56 +71,12 @@ print(f"log Z    = {mcmc_result.log_evidence:.2f}")
 | `result.plot_fit(path)` | Fit spectrum + dust curve (A_λ − A_V, mag) |
 | `result.plot_dust(path)` | Standalone dust plot: S/L data (scatter) + polynomial fit (line) |
 
-### MCMCFitter
+### Dust Modes
 
-| Method / Property | Description |
-|-------------------|-------------|
-| `MCMCFitter(ssp_fits, specfit_result, sfh_model, use_jax=True, ...)` | Set up MCMC. JAX JIT-accelerated by default |
-| `mc.run(n_live, chain_dir, priors=..., ...)` | Run UltraNest, return `MCMCResult` |
-| `result.bestfit` | Best-fit parameter dict |
-| `result.posterior` | Posterior samples `(N, n_params)` ndarray |
-| `result.log_evidence` | log(Z) model evidence |
-| `result.save_result(path)` | Save best-fit params + CSP spectrum to FITS |
-| `result.plot_corner(path)` | Corner plot |
-| `result.plot_bestfit(path)` | Best-fit CSP vs observed |
-| `result.plot_sfh(path)` | SFH with 68% CI |
-
-### MCMC Result FITS Structure
-
-`save_result()` writes a FITS file with these HDUs:
-
-| HDU | Content |
-|-----|---------|
-| `PRIMARY` | Header with `LOGEVID` (log evidence) |
-| `BESTFIT` | Parameter table (name, value) |
-| `WAVE` | Observed wavelength grid (rest frame) |
-| `FLUX` | Preprocessed flux |
-| `ERROR` | Preprocessed error |
-| `MASK` | Pixel mask (1 = good) |
-| `CSP` | Best-fit CSP on SSP wavelength grid |
-| `CSP_OBS` | Best-fit CSP interpolated to observed grid |
-
-### Priors
-
-| Class | Description |
-|-------|-------------|
-| `UniformPrior(lo, hi)` | Uniform on [lo, hi] |
-| `LogUniformPrior(lo, hi)` | Uniform in log₁₀ space |
-| `GaussianPrior(mu, sigma)` | Gaussian with mean μ, std σ |
-| `FixedPrior(value)` | Fixed value (parameter frozen) |
-
-```python
-from bigspy import UniformPrior, LogUniformPrior, FixedPrior
-
-mc.run(
-    priors={
-        "logZsun": UniformPrior(-2.5, 0.5),
-        "t0":      UniformPrior(0.1, 13.5),
-        "tau":     FixedPrior(5.0),       # freeze τ = 5
-    },
-    ...
-)
-```
+| Mode | String | Description |
+|------|--------|-------------|
+| Mode 1 | `"mode1"` | Calzetti et al. (2000) attenuation curve, fits single parameter `E(B−V)` |
+| Mode 2 | `"mode2"` | S/L (Smooth/Line) non-parametric dust curve. Separates smooth stellar continuum from emission lines, fits quadratic polynomial `A_λ − A_V = p1·(x−xv) + p2·(x²−xv²)` where `x = 10⁴/λ`. Returns S/L data points (`_dust_data_wave`, `_dust_data_A`) plus polynomial fit parameters. (default) |
 
 ### SFH Models
 
@@ -166,12 +122,56 @@ mc = MCMCFitter(..., sfh_model=MySFH)
 
 Required interface: `n_params`, `param_names`, `default_priors`, `__init__(**params)`, `evaluate(timegrid)`.
 
-## Dust Modes
+### Priors
 
-| Mode | String | Description |
-|------|--------|-------------|
-| Mode 1 | `"mode1"` | Calzetti et al. (2000) attenuation curve, fits single parameter `E(B−V)` |
-| Mode 2 | `"mode2"` | S/L (Smooth/Line) non-parametric dust curve. Separates smooth stellar continuum from emission lines, fits quadratic polynomial `A_λ − A_V = p1·(x−xv) + p2·(x²−xv²)` where `x = 10⁴/λ`. Returns S/L data points (`_dust_data_wave`, `_dust_data_A`) plus polynomial fit parameters. (default) |
+| Class | Description |
+|-------|-------------|
+| `UniformPrior(lo, hi)` | Uniform on [lo, hi] |
+| `LogUniformPrior(lo, hi)` | Uniform in log₁₀ space |
+| `GaussianPrior(mu, sigma)` | Gaussian with mean μ, std σ |
+| `FixedPrior(value)` | Fixed value (parameter frozen) |
+
+```python
+from bigspy import UniformPrior, LogUniformPrior, FixedPrior
+
+mc.run(
+    priors={
+        "logZsun": UniformPrior(-2.5, 0.5),
+        "t0":      UniformPrior(0.1, 13.5),
+        "tau":     FixedPrior(5.0),       # freeze τ = 5
+    },
+    ...
+)
+```
+
+### MCMCFitter — stellar population inference
+
+| Method / Property | Description |
+|-------------------|-------------|
+| `MCMCFitter(ssp_fits, specfit_result, sfh_model, use_jax=True, ...)` | Set up MCMC. JAX JIT-accelerated by default |
+| `mc.run(n_live, chain_dir, priors=..., ...)` | Run UltraNest, return `MCMCResult` |
+| `result.bestfit` | Best-fit parameter dict |
+| `result.posterior` | Posterior samples `(N, n_params)` ndarray |
+| `result.log_evidence` | log(Z) model evidence |
+| `result.save_result(path)` | Save best-fit params + CSP spectrum to FITS |
+| `result.plot_corner(path)` | Corner plot |
+| `result.plot_bestfit(path)` | Best-fit CSP vs observed |
+| `result.plot_sfh(path)` | SFH with 68% CI |
+
+### MCMC Result FITS Structure
+
+`save_result()` writes a FITS file with these HDUs:
+
+| HDU | Content |
+|-----|---------|
+| `PRIMARY` | Header with `LOGEVID` (log evidence) |
+| `BESTFIT` | Parameter table (name, value) |
+| `WAVE` | Observed wavelength grid (rest frame) |
+| `FLUX` | Preprocessed flux |
+| `ERROR` | Preprocessed error |
+| `MASK` | Pixel mask (1 = good) |
+| `CSP` | Best-fit CSP on SSP wavelength grid |
+| `CSP_OBS` | Best-fit CSP interpolated to observed grid |
 
 ## JAX Acceleration
 
