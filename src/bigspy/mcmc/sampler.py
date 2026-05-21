@@ -111,6 +111,11 @@ class UltraNestSampler:
     def run(self, min_live_points=400, max_ncalls=None, frac_remain=0.5, **kwargs):
         """Run UltraNest sampling."""
         import ultranest
+        # Clean stale chain directory to avoid lock errors
+        import shutil
+        chains_dir = os.path.join(self.out_dir, "chains")
+        if os.path.exists(chains_dir):
+            shutil.rmtree(chains_dir, ignore_errors=True)
         self.sampler = ultranest.ReactiveNestedSampler(
             self.param_names, self.loglike, self.prior_transform,
             log_dir=self.out_dir, resume="overwrite", vectorized=True)
