@@ -26,11 +26,8 @@ FIT_NEIG = 10             # number of PCA components to use in fit
 WAVE_NORM = 5500.0        # normalization wavelength
 
 # ── Emission-line masks for preprocessing ──────────────────────
-_EM_LINES = [
-    [3715, 3740], [3850, 3910], [3940, 4020], [4080, 4120],
-    [4310, 4370], [4830, 4890], [4940, 5020], [5850, 5910],
-    [6280, 6330], [6510, 6610], [6700, 6770],
-]
+from .mask import EMISSION_LINES as _EM_DICT
+_EM_LINES = list(_EM_DICT.values())
 
 
 # ═══════════════════════════════════════════════════════════════

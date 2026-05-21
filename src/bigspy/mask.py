@@ -1,12 +1,12 @@
 """Emission line mask definitions for spectral fitting.
 
 Provides a detailed emission line list (~50 lines) from the original BIGS
-SpecFit.py Emlines module, plus the original 11 broad default regions.
+SpecFit.py Emlines module.
 """
 
 # ── Detailed emission line list (Å) ──────────────────────────────────
 # From BIGS SpecFit.py / Emlines: individual line centers ± FWHM equivalent
-# Format: {label: [lo, hi]} in rest-frame Angstrom
+# Format: label -> [lo, hi] in rest-frame Angstrom
 EMISSION_LINES = {
     # Near-UV / Blue
     "l3710": [3710, 3737],
@@ -75,23 +75,7 @@ EMISSION_LINES = {
     "l9060": [9060, 9082],
 }
 
-# ── Default broad regions (original 11 groups) ───────────────────────
-DEFAULT_EMISSION_MASK = [
-    (3715, 3740),   # [OII] 3727
-    (3850, 3910),   # Balmer break region
-    (3940, 4020),   # Ca H&K + [NeIII]
-    (4080, 4120),   # H-delta
-    (4310, 4370),   # H-gamma + [OIII]
-    (4830, 4890),   # H-beta
-    (4940, 5020),   # [OIII] 4959, 5007
-    (5850, 5910),   # HeI + NaD
-    (6280, 6330),   # [OI] 6300
-    (6510, 6610),   # H-alpha + [NII]
-    (6700, 6770),   # [SII] 6717, 6731
-]
-
-
-def build_emission_mask(wave, regions=None, detailed=False):
+def build_emission_mask(wave, regions=None):
     """Build boolean emission line mask for a wavelength grid.
 
     Parameters
@@ -99,10 +83,7 @@ def build_emission_mask(wave, regions=None, detailed=False):
     wave : ndarray
         Wavelength grid (Angstrom).
     regions : list of (lo, hi) tuples, optional
-        Custom emission line regions. Uses DEFAULT_EMISSION_MASK if None.
-    detailed : bool, optional
-        If True, use the detailed EMISSION_LINES dict (~50 lines).
-        If False (default), use DEFAULT_EMISSION_MASK (11 broad groups).
+        Custom emission line regions. Uses EMISSION_LINES if None.
 
     Returns
     -------
@@ -115,11 +96,8 @@ def build_emission_mask(wave, regions=None, detailed=False):
     if regions is not None:
         for lo, hi in regions:
             mask[(wave >= lo) & (wave <= hi)] = False
-    elif detailed:
-        for lo, hi in EMISSION_LINES.values():
-            mask[(wave >= lo) & (wave <= hi)] = False
     else:
-        for lo, hi in DEFAULT_EMISSION_MASK:
+        for lo, hi in EMISSION_LINES.values():
             mask[(wave >= lo) & (wave <= hi)] = False
 
     return mask

@@ -25,3 +25,5 @@ out/chains_*/
 PLAN.md
 *.zip
 anaconda_projects/
+*.fits.gz
+drpall-*
