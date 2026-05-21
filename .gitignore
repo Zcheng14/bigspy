@@ -27,3 +27,4 @@ PLAN.md
 anaconda_projects/
 PLAN_JAX.md
 out_manga_demo/
+run_bigspy_jax.py
