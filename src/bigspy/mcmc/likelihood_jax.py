@@ -105,6 +105,8 @@ def compute_chi2_batch_jax(
     residuals2 = (model - obs_flux[None, :]) ** 2 / (obs_err[None, :] ** 2)  # (N, n_obs)
     masked_res2 = jnp.where(obs_mask[None, :], residuals2, 0.0)
     chi2 = jnp.sum(masked_res2, axis=1)  # (N,)
+    # Guard against NaN/Inf from extreme parameter values
+    chi2 = jnp.where(jnp.isfinite(chi2), chi2, 1e30)
     return chi2
 
 

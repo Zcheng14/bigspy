@@ -79,6 +79,8 @@ class Likelihood:
         # Compute chi2
         residuals = (model - self.obs_flux[np.newaxis, :]) / self.obs_error[np.newaxis, :]
         chi2 = np.sum(residuals[:, self.obs_mask] ** 2, axis=1)
+        # Guard against NaN/Inf (extreme parameter values)
+        chi2 = np.where(np.isfinite(chi2), chi2, 1e30)
         return chi2
 
     ndof = property(lambda s: s.obs_mask.sum() - 3)
