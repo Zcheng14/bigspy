@@ -10,10 +10,27 @@ Two-stage spectral fitting of galaxy spectra:
 ## Installation
 
 ```bash
+# 1. Clone with git-lfs (required for large template & test data files)
+git lfs install
+git lfs clone https://github.com/Zcheng14/bigspy.git
+
+# Or if already cloned without LFS:
+git lfs pull
+
+# 2. Create environment (optional but recommended)
+conda create -n bigspy python=3.10
+conda activate bigspy
+
+# 3. Install bigspy
+cd bigspy
 pip install -e .
 ```
 
-Requires Python ≥ 3.9. Dependencies: `numpy`, `scipy`, `astropy`, `lmfit`, `ultranest`, `matplotlib`, `corner`, `jax`, `jaxlib`, `h5py`.
+If `git lfs` is not installed: `conda install -c conda-forge git-lfs` or [download](https://git-lfs.github.com).
+
+**Alternative**: download the [zip](https://github.com/Zcheng14/bigspy/archive/refs/heads/master.zip) (includes LFS files), extract and run `pip install -e .` directly.
+
+Requires Python ≥ 3.9. Dependencies (auto-installed): `numpy`, `scipy`, `astropy`, `lmfit`, `ultranest`, `matplotlib`, `corner`, `jax`, `jaxlib`, `h5py`.
 
 ## Quick Start
 
