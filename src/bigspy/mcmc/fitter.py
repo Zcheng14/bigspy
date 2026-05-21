@@ -7,7 +7,6 @@ from .ssp import SSPLibrary
 from .dust import DustAttenuation
 from .likelihood import Likelihood
 from .sampler import UltraNestSampler
-from .sfh import DelayedExponentialSFH
 
 
 class MCMCResult:
@@ -64,7 +63,8 @@ class MCMCResult:
         # Build best-fit CSP
         logZ = best.get("logZsun", 0.0)
         sfh_kw = {k: v for k, v in best.items() if k != "logZsun"}
-        sfh = DelayedExponentialSFH(**sfh_kw, age_universe=13.8)
+        sfh_cls = self._sampler.sfh_class
+        sfh = sfh_cls(**sfh_kw, age_universe=13.8)
         csp = like.builder.build(logZ, sfh)
         csp = like.broadener.apply(csp)
         n = like._med5500(like.ssp.wave, csp, np.ones_like(csp, dtype=bool), like._n_range)
@@ -132,8 +132,9 @@ class MCMCResult:
         import numpy as np
         like = self._like
         best = self.bestfit
-        sfh = DelayedExponentialSFH(**{k: v for k, v in best.items() if k != "logZsun"},
-                                    age_universe=13.8)
+        sfh_cls = self._sampler.sfh_class
+        sfh = sfh_cls(**{k: v for k, v in best.items() if k != "logZsun"},
+                       age_universe=13.8)
         logZ = best.get("logZsun", 0.0)
         csp = like.builder.build(logZ, sfh)
         csp = like.broadener.apply(csp)
@@ -203,7 +204,7 @@ class MCMCResult:
         sfr_grid = np.zeros((n_use, len(cosmic_time)))
         for i in range(n_use):
             sfh_kwargs = {name: post_sub[i, j] for name, j in _sfh_param_idx.items()}
-            sfh = DelayedExponentialSFH(**sfh_kwargs, age_universe=13.8)
+            sfh = self._sampler.sfh_class(**sfh_kwargs, age_universe=13.8)
             sfr_grid[i] = sfh.evaluate(like.ssp.time)
 
         # Compute percentiles
