@@ -212,3 +212,4 @@ This code implements the methodology described in:
 
 - Zhou S., Mo H. J., Li C., et al., 2019, MNRAS, 485, 5256 — *"SDSS-IV MaNGA: stellar initial mass function variation inferred from Bayesian analysis of the integral field spectroscopy of early-type galaxies"* — [2019MNRAS.485.5256Z](https://ui.adsabs.harvard.edu/abs/2019MNRAS.485.5256Z)
 - Li N., Li C., Mo H. J., Hu J., Zhou S., Du C., 2020, ApJ, 896, 38 — *"Estimating Dust Attenuation from Galactic Spectra. I. Methodology and Tests"* — [2020ApJ...896...38L](https://ui.adsabs.harvard.edu/abs/2020ApJ...896...38L)
+- Buchner J., 2021, JOSS, 6(60), 3001 — *"UltraNest — a robust, general purpose Bayesian inference engine"* — [10.21105/joss.03001](https://doi.org/10.21105/joss.03001)
