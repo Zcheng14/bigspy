@@ -188,22 +188,14 @@ mc.run(
 
 ## JAX Acceleration
 
-Add `use_jax=True` for JIT-compiled likelihood evaluation (12–80× faster on CPU):
+Add `use_jax=True` for JIT-compiled likelihood evaluation, significantly faster than NumPy on CPU:
 
 ```python
 mc = MCMCFitter(..., use_jax=True)
 mc.run(n_live=400, chain_dir="out/chains")
 ```
 
-| Batch size N | NumPy | JAX JIT | Speedup |
-|-------------|-------|---------|---------|
-| 10 | 0.10 s | 0.008 s | 12× |
-| 50 | 0.27 s | 0.011 s | 25× |
-| 200 | 1.02 s | 0.017 s | 61× |
-| 500 | 3.12 s | 0.039 s | 80× |
-| 1000 | 5.05 s | 0.076 s | 66× |
-
-Numerical agreement: Δχ²/χ² < 10⁻³. The NumPy backend is retained for plotting.
+The NumPy backend is retained internally for plotting compatibility.
 
 ## Running the Demo
 
