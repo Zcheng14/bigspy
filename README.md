@@ -28,6 +28,7 @@ specfit = sf.fit(
     error=error_obs,        # uncertainty
     mask=mask_obs,          # bool, good pixels
     z_sys=your_redshift,    # systemic redshift (user-supplied)
+    ebv_mw=ebv_mw,          # Galactic E(B-V) for MW extinction correction
     mode="mode2",           # S/L non-parametric dust (default)
 )
 print(f"v_e = {specfit.ve[0]:.1f} ± {specfit.ve[1]:.1f} km/s")
@@ -60,7 +61,7 @@ print(f"log Z    = {mcmc_result.log_evidence:.2f}")
 | Method / Property | Description |
 |-------------------|-------------|
 | `SpecFit(pca_fits)` | Load PCA templates from FITS |
-| `sf.fit(wave, flux, error, mask, z_sys, mode, ...)` | Run fitting, return `SpecFitResult` |
+| `sf.fit(wave, flux, error, mask, z_sys, ebv_mw=0.0, mode="mode2", ...)` | Run fitting, return `SpecFitResult` |
 | `result.ve`, `result.vd` | Line-of-sight velocity & dispersion `(value, error)` in km/s |
 | `result.ebv` | E(B−V) colour excess `(value, error)` |
 | `result.p1`, `result.p2` | Mode 2 dust polynomial coefficients |
