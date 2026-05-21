@@ -13,7 +13,7 @@ Two-stage spectral fitting of galaxy spectra:
 pip install -e .
 ```
 
-Requires Python ≥ 3.9. Dependencies: `numpy`, `scipy`, `astropy`, `lmfit`, `ultranest`, `matplotlib`, `corner`, `jax`, `jaxlib`.
+Requires Python ≥ 3.9. Dependencies: `numpy`, `scipy`, `astropy`, `lmfit`, `ultranest`, `matplotlib`, `corner`, `jax`, `jaxlib`, `h5py`.
 
 ## Quick Start
 
