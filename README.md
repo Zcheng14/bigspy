@@ -26,10 +26,6 @@ cd bigspy
 pip install -e .
 ```
 
-If `git lfs` is not installed: `conda install -c conda-forge git-lfs` or [download](https://git-lfs.github.com).
-
-**Alternative**: download the [zip](https://github.com/Zcheng14/bigspy/archive/refs/heads/master.zip) (includes LFS files), extract and run `pip install -e .` directly.
-
 Requires Python ≥ 3.9. Dependencies (auto-installed): `numpy`, `scipy`, `astropy`, `lmfit`, `ultranest`, `matplotlib`, `corner`, `jax`, `jaxlib`, `h5py`.
 
 ## Quick Start
