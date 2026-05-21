@@ -30,6 +30,7 @@ dependencies = [
     "corner>=2.2",
     "jax>=0.4",
     "jaxlib>=0.4",
+    "h5py>=3.0",
 ]
 
 [project.optional-dependencies]
