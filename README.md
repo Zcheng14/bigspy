@@ -194,13 +194,9 @@ Numerical agreement: Δχ²/χ² < 10⁻³. The NumPy backend is retained for pl
 ## Running the Demo
 
 ```bash
-# JAX-accelerated (default)
-python example/run_bigspy_jax.py
-jupyter notebook example/bigspy_demo_jax.ipynb
-
-# NumPy-only fallback
-python example/run_bigspy.py
-jupyter notebook example/bigspy_demo.ipynb
+# Jupyter notebooks (recommended)
+jupyter notebook example/bigspy_demo_jax.ipynb      # pkl test spectra
+jupyter notebook example/bigspy_manga_demo.ipynb    # MaNGA datacube
 ```
 
 Both walk through the full pipeline: load data → SpecFit → MCMC → visualization → custom SFH.
