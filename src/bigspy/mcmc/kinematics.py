@@ -31,11 +31,12 @@ def _build_convolution_matrix(n_pix, sigma_pix, x0_pix=0.0):
     kernel /= kernel.sum()
     
     # Build convolution matrix using "same" mode
+    # (matches np.convolve(y, kernel, "same"): output[j] = sum_i kernel[i]*y[j+offset-i])
     K = np.zeros((n_pix, n_pix))
     offset = khalf
     for i in range(len(kernel)):
         for j in range(n_pix):
-            src = j + i - offset
+            src = j + offset - i
             if 0 <= src < n_pix:
                 K[j, src] += kernel[i]
     

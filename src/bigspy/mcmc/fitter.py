@@ -22,7 +22,7 @@ class MCMCResult:
         """NumPy Likelihood for plotting/saving (falls back to sampler's like)."""
         if self._likelihood_np is not None:
             return self._likelihood_np
-        return self._like
+        return self._sampler.like
     
     @property
     def bestfit(self):
@@ -254,8 +254,8 @@ class MCMCFitter:
     emission_mask : list, optional
         Additional emission line regions to mask (default: uses SpecFit's mask).
     use_jax : bool, optional
-        Use JAX-accelerated likelihood backend (default: False).
-        Requires ``jax`` and ``jax.numpy`` installed.
+        Use JAX-accelerated likelihood backend (default: True; silently
+        falls back to NumPy if ``jax`` is not installed).
     """
 
     def __init__(self, ssp_fits, specfit_result, sfh_model="delayed",
@@ -273,7 +273,7 @@ class MCMCFitter:
         # Build mask: combine SpecFit mask + optional additional emission mask
         self._obs_mask = np.asarray(specfit_result.mask_prep, dtype=bool)
         if emission_mask is not None:
-            from ...mask import build_emission_mask
+            from ..mask import build_emission_mask
             em = build_emission_mask(self._wave_obs, emission_mask)
             self._obs_mask = self._obs_mask & em
 

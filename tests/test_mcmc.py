@@ -8,8 +8,12 @@ from bigspy.mcmc.priors import UniformPrior, LogUniformPrior, GaussianPrior, Fix
 from bigspy.mcmc.sfh import DelayedExponentialSFH, SFHBase
 from bigspy.mcmc.ssp import SSPLibrary
 from bigspy.mcmc.dust import DustAttenuation, calz_unred
-from bigspy.mcmc.kinematics import gauss_convolve, gauss_convolve_batch, VelocityBroadening
+from bigspy.mcmc.kinematics import (
+    gauss_convolve, gauss_convolve_batch, VelocityBroadening,
+    _build_convolution_matrix,
+)
 from bigspy.mcmc.likelihood import Likelihood
+from bigspy.specfit import calz_unred as specfit_calz_unred
 from bigspy import MCMCFitter
 
 
@@ -162,3 +166,103 @@ class TestVectorized:
             logZ, DelayedExponentialSFH, np.column_stack([t0, tau])
         )
         np.testing.assert_allclose(chi2_batch, chi2_loop, rtol=1e-10)
+
+
+class TestConvolutionMatrix:
+    """K @ y must reproduce gauss_convolve(y, sigma, x0) for any x0."""
+
+    def test_matrix_equals_convolve_x0_zero(self):
+        rng = np.random.RandomState(0)
+        n, sigma = 150, 2.5
+        y = rng.normal(0, 1, n)
+        K = _build_convolution_matrix(n, sigma, 0.0)
+        np.testing.assert_allclose(K @ y, gauss_convolve(y, sigma, 0.0), atol=1e-12)
+
+    def test_matrix_equals_convolve_with_offset(self):
+        rng = np.random.RandomState(1)
+        n, sigma, x0 = 150, 2.5, 1.3
+        y = rng.normal(0, 1, n)
+        K = _build_convolution_matrix(n, sigma, x0)
+        np.testing.assert_allclose(K @ y, gauss_convolve(y, sigma, x0), atol=1e-12)
+        # Direction check: a delta at pixel p peaks at p + x0 in both paths
+        delta = np.zeros(n)
+        delta[30] = 1.0
+        assert np.argmax(K @ delta) == 30 + round(x0)
+        assert np.argmax(gauss_convolve(delta, sigma, x0)) == 30 + round(x0)
+
+    def test_interior_row_sums_one(self):
+        n, sigma = 150, 2.5
+        K = _build_convolution_matrix(n, sigma, 0.0)
+        khalf = round(4 * sigma + 3)
+        np.testing.assert_allclose(
+            np.sum(K[khalf:n - khalf, :], axis=1), 1.0, atol=1e-12)
+
+    def test_sigma_zero_identity(self):
+        K = _build_convolution_matrix(50, 0.0)
+        np.testing.assert_allclose(K, np.eye(50))
+        y = np.arange(50, dtype=float)
+        np.testing.assert_allclose(gauss_convolve(y, 0.0), y)
+
+    def test_velocity_broadening_sigma_pix(self):
+        vb = VelocityBroadening(34.5, velscale=6.9)
+        assert vb.sigma_pix == pytest.approx(5.0, abs=1e-12)
+        # Default velscale comes from the DLOGW log grid
+        expected = (10 ** 0.0001 - 1) * 299792.458
+        assert VelocityBroadening.DLOGW_VEL == pytest.approx(expected, rel=1e-12)
+        assert VelocityBroadening(expected).sigma_pix == pytest.approx(1.0, abs=1e-12)
+
+    def test_apply_batch_equals_rows(self):
+        rng = np.random.RandomState(2)
+        spectra = rng.normal(0, 1, (4, 120))
+        vb = VelocityBroadening(50.0, velscale=10.0)
+        batch = vb.apply_batch(spectra)
+        for i in range(spectra.shape[0]):
+            np.testing.assert_allclose(batch[i], vb.apply(spectra[i]), atol=1e-12)
+
+
+class TestDustAttenuationCalzetti:
+    def test_from_calzetti_apply(self):
+        w = np.linspace(4000, 8000, 200)
+        ebv = 0.15
+        d = DustAttenuation.from_calzetti(w, ebv)
+        curve = d.apply(np.ones_like(w))
+        # Closed form: 10^(-0.4 k(lam) ebv), k from the two Calzetti branches
+        x = 1e4 / w
+        k = np.where(w >= 6300,
+                     2.659 * (-1.857 + 1.040 * x) + 4.05,
+                     2.659 * (0.011 * x ** 3 - 0.198 * x ** 2 + 1.509 * x - 2.156) + 4.05)
+        np.testing.assert_allclose(curve, 10.0 ** (-0.4 * k * ebv), rtol=1e-12)
+        # Matches the standalone calz_unred function (independent code path)
+        np.testing.assert_allclose(curve, calz_unred(w, ebv), rtol=1e-12)
+
+    def test_unknown_mode_raises(self):
+        w = np.linspace(4000, 5000, 10)
+        with pytest.raises(ValueError, match="Unknown dust mode"):
+            DustAttenuation(w, mode="wedge")
+
+    def test_apply_recomputes_on_new_grid(self):
+        w1 = np.linspace(4000, 6000, 100)
+        w2 = np.linspace(5000, 7000, 80)
+        ebv = 0.15
+        d = DustAttenuation.from_calzetti(w1, ebv)
+        flux = np.full(len(w2), 2.0)
+        # wave=w2 differs from the stored grid -> curve recomputed on w2
+        np.testing.assert_allclose(d.apply(flux, wave=w2),
+                                   flux * calz_unred(w2, ebv), rtol=1e-12)
+        # wave=None -> cached curve on the stored grid
+        f1 = np.full(len(w1), 2.0)
+        np.testing.assert_allclose(d.apply(f1), f1 * calz_unred(w1, ebv), rtol=1e-12)
+
+    def test_inverse_relation_with_specfit(self):
+        # specfit.calz_unred uses +0.4*k*ebv, mcmc.dust.calz_unred uses -0.4:
+        # for the same |k| their product must be exactly 1.
+        w = np.linspace(4000, 8000, 300)
+        e = 0.15
+        np.testing.assert_allclose(
+            specfit_calz_unred(w, e) * calz_unred(w, e), 1.0, rtol=1e-12)
+
+    def test_calz_unred_continuity_at_6300(self):
+        for ebv in (0.0, 0.1):
+            lo = calz_unred(np.array([6299.5]), ebv)[0]
+            hi = calz_unred(np.array([6300.5]), ebv)[0]
+            assert abs(lo / hi - 1.0) < 0.003

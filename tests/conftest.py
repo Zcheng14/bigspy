@@ -51,3 +51,22 @@ def specfit_result(pca_file, test_data):
         z_sys=test_data["z"],
         mode="mode2",
     )
+
+
+# ── Synthetic data fixtures (no LFS reference data needed) ──────────
+@pytest.fixture(scope="session")
+def synth_ssp_file(tmp_path_factory):
+    """Synthetic 3x6x761 SSP library FITS with analytically known spectra."""
+    import _synth
+    path = tmp_path_factory.mktemp("synth") / "synth_ssp.fits"
+    _synth.make_ssp_fits(str(path))
+    return str(path)
+
+
+@pytest.fixture(scope="session")
+def synth_pca_file(tmp_path_factory):
+    """Synthetic Legendre-basis PCA-template FITS on a DLOGW=1e-4 log grid."""
+    import _synth
+    path = tmp_path_factory.mktemp("synth") / "synth_pca.fits"
+    _synth.make_pca_fits(str(path))
+    return str(path)

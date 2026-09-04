@@ -114,25 +114,29 @@ def ccm_unred(wave, ebv):
 # ═══════════════════════════════════════════════════════════════
 #  Data loading
 # ═══════════════════════════════════════════════════════════════
-def load_pca_templates(pca_file):
+def load_pca_templates(pca_file, n_comp=None):
     """Load PCA templates from a FITS file.
 
     Parameters
     ----------
     pca_file : str
         Path to the PCA FITS file (must contain 'pca_log' and 'wave_log' HDUs).
+    n_comp : int, optional
+        Number of PCA components to keep. Defaults to the current FIT_NEIG.
 
     Returns
     -------
-    pca : ndarray (FIT_NEIG, n_wave)
+    pca : ndarray (n_comp, n_wave)
         PCA component spectra in log-flux.
     wave_temp : ndarray (n_wave,)
         Template wavelength grid in Angstrom.
     velscale : float
         Velocity scale per pixel (km/s).
     """
+    if n_comp is None:
+        n_comp = FIT_NEIG
     with fits.open(pca_file) as h:
-        pca = h["pca_log"].data[:FIT_NEIG, :]
+        pca = h["pca_log"].data[:n_comp, :]
         wt = h["wave_log"].data
     return pca, wt, (10 ** DLOGW - 1) * C
 
@@ -431,6 +435,8 @@ def run_mode2(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
     # Normalize + Fr (fit dust curve to flux ratio)
     m5500 = (wave_c > 5450) & (wave_c < 5550)
     mm = m5500 & (mask == 1)
+    ok = np.zeros_like(mask, dtype=bool)   # safe defaults when the window
+    Fr = np.zeros_like(flux)               # is too masked to fit the curve
     if mm.sum() > m5500.sum() / 4:
         Fo = flux / np.median(flux[mm])
         Fm = slr_flux / np.median(slr_flux[mm])
@@ -727,7 +733,10 @@ class SpecFit:
 
     def __init__(self, pca_fits):
         self.pca_fits = pca_fits
-        self._pca, self._wave_temp, self._velscale = load_pca_templates(pca_fits)
+        # Keep all available components so fit(neig=...) can choose freely;
+        # the active number is sliced at fit time from FIT_NEIG.
+        self._pca, self._wave_temp, self._velscale = load_pca_templates(
+            pca_fits, n_comp=NEIG)
 
     def fit(self, wave=None, flux=None, error=None, mask=None, z_sys=None,
             mode="mode2", emission_mask=None, neig=None, observed_fits=None):
@@ -738,7 +747,7 @@ class SpecFit:
         wave, flux, error : ndarray
             Observed spectrum arrays (observed frame).
         mask : ndarray, optional
-            Boolean or 0/1 mask (1=good pixel).
+            0/1 mask (0 = good pixel, as in load_test_spectrum output).
         z_sys : float
             Systemic redshift.
         mode : str
@@ -759,11 +768,12 @@ class SpecFit:
         import pickle
 
         global FIT_NEIG
+        old_neig = FIT_NEIG
         if neig is not None:
-            old_neig = FIT_NEIG
             FIT_NEIG = neig
 
         # Load from FITS if provided
+        mask_from_fits = False
         if observed_fits is not None:
             with astro_fits.open(observed_fits) as h:
                 wave = h["WAVE"].data
@@ -771,6 +781,7 @@ class SpecFit:
                 error = h["ERROR"].data
                 if "MASK" in h:
                     mask = h["MASK"].data
+                    mask_from_fits = True
                 if "REDSHIFT" in h[0].header:
                     z_sys = h[0].header["REDSHIFT"]
 
@@ -778,8 +789,12 @@ class SpecFit:
             raise ValueError("wave, flux, error, z_sys are required")
 
         # Build data dict compatible with existing preprocess_spectrum
+        # (which expects 0 = good).  MASK HDUs written by write_observed_fits
+        # use the opposite 1 = good convention -> convert.
         if mask is None:
-            mask = np.ones_like(flux, dtype=float)
+            mask = np.zeros_like(flux, dtype=float)
+        elif mask_from_fits:
+            mask = (np.asarray(mask) == 0).astype(float)
         else:
             mask = np.asarray(mask, dtype=float)
 
@@ -799,15 +814,17 @@ class SpecFit:
         if emission_mask is not None:
             _EM_LINES[:] = emission_mask
 
-        # Run fitting (translate mode names)
-        _mode_map = {"mode1": "m1", "mode2": "sl", "both": "both", "m1": "m1", "sl": "sl"}
-        fit_mode = _mode_map.get(mode, mode)
-        prep = preprocess_spectrum(data, self._wave_temp, self._pca)
-        fit = fit_spectrum(prep, self._pca, self._wave_temp, mode=fit_mode)
-
-        # Restore globals
-        _EM_LINES[:] = old_em
-        if neig is not None:
+        try:
+            # Run fitting (translate mode names)
+            _mode_map = {"mode1": "m1", "mode2": "sl", "both": "both",
+                         "m1": "m1", "sl": "sl"}
+            fit_mode = _mode_map.get(mode, mode)
+            pca_use = self._pca[:FIT_NEIG, :]
+            prep = preprocess_spectrum(data, self._wave_temp, pca_use)
+            fit = fit_spectrum(prep, pca_use, self._wave_temp, mode=fit_mode)
+        finally:
+            # Restore globals even if the fit raises
+            _EM_LINES[:] = old_em
             FIT_NEIG = old_neig
 
         return SpecFitResult(fit, prep)
