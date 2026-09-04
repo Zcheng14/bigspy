@@ -12,6 +12,7 @@ from bigspy.mcmc.kinematics import (
     gauss_convolve, gauss_convolve_batch, VelocityBroadening,
     _build_convolution_matrix,
 )
+from bigspy.mcmc import kinematics as _kin_mod
 from bigspy.mcmc.likelihood import Likelihood
 from bigspy.specfit import calz_unred as specfit_calz_unred
 from bigspy import MCMCFitter
@@ -71,6 +72,27 @@ class TestSFH:
         params = np.array([[1.0, 3.0], [5.0, 2.0]])
         result = DelayedExponentialSFH.evaluate_batch(t, params)
         assert result.shape == (2, 30)
+
+    def test_evaluate_batch_matches_loop_delayed(self):
+        """Batch evaluation must reproduce the per-object loop exactly."""
+        rng = np.random.RandomState(7)
+        t = np.linspace(0.5, 13.8, 196)
+        params = np.column_stack([rng.uniform(0.1, 13.5, 64),
+                                  rng.uniform(0.1, 10.0, 64)])
+        batch = DelayedExponentialSFH.evaluate_batch(t, params)
+        loop = np.array([DelayedExponentialSFH(r[0], r[1]).evaluate(t)
+                         for r in params])
+        np.testing.assert_array_equal(batch, loop)
+
+    def test_evaluate_batch_age_cutoff(self):
+        """SFR is zero beyond age_universe=14 (default), batch == loop."""
+        t = np.linspace(0.5, 15.5, 64)
+        params = np.array([[1.0, 3.0], [5.0, 2.0]])
+        batch = DelayedExponentialSFH.evaluate_batch(t, params)
+        loop = np.array([DelayedExponentialSFH(r[0], r[1]).evaluate(t)
+                         for r in params])
+        np.testing.assert_array_equal(batch, loop)
+        assert np.all(batch[:, t > 14.0] == 0.0)
 
 
 class TestSSPLibrary:
@@ -196,6 +218,61 @@ class TestConvolutionMatrix:
         khalf = round(4 * sigma + 3)
         np.testing.assert_allclose(
             np.sum(K[khalf:n - khalf, :], axis=1), 1.0, atol=1e-12)
+
+    def test_matrix_matches_naive_loop(self):
+        """K must equal the original per-pixel double-loop construction exactly."""
+        n, sigma, x0 = 200, 3.7, -1.9
+        K = _build_convolution_matrix(n, sigma, x0)
+        # Naive reference: verbatim copy of the original double loop
+        khalf = round(4 * sigma + abs(x0) + 3)
+        xx = np.arange(khalf * 2 + 1) - khalf
+        kernel = np.exp(-(xx - x0) ** 2 / (2 * sigma ** 2))
+        kernel /= kernel.sum()
+        K_ref = np.zeros((n, n))
+        offset = khalf
+        for i in range(len(kernel)):
+            for j in range(n):
+                src = j + offset - i
+                if 0 <= src < n:
+                    K_ref[j, src] += kernel[i]
+        np.testing.assert_array_equal(K, K_ref)
+
+    def test_convolve_batch_offset_matches_rows(self):
+        """gauss_convolve_batch rows == per-row gauss_convolve, x0 != 0."""
+        rng = np.random.RandomState(4)
+        spectra = rng.normal(0, 1, (6, 500))
+        sigma, x0 = 2.0, 1.7
+        batch = gauss_convolve_batch(spectra, sigma, x0)
+        for i in range(spectra.shape[0]):
+            np.testing.assert_allclose(
+                batch[i], gauss_convolve(spectra[i], sigma, x0), atol=1e-12)
+
+    def test_matrix_cache_reused(self):
+        """The convolution matrix is built once per (n_pix, sigma, x0) key."""
+        _kin_mod.clear_convolution_cache()
+        try:
+            spectra = np.random.RandomState(5).normal(0, 1, (8, 300))
+            out1 = gauss_convolve_batch(spectra, 2.5)
+            info1 = _kin_mod._conv_matrix_cached.cache_info()
+            assert info1.misses == 1 and info1.hits == 0
+            out2 = gauss_convolve_batch(spectra, 2.5)
+            info2 = _kin_mod._conv_matrix_cached.cache_info()
+            assert info2.misses == 1 and info2.hits == 1  # no rebuild
+            np.testing.assert_array_equal(out1, out2)
+            gauss_convolve_batch(spectra, 1.5)  # different sigma -> rebuild
+            assert _kin_mod._conv_matrix_cached.cache_info().misses == 2
+        finally:
+            _kin_mod.clear_convolution_cache()
+
+    def test_cached_matrix_readonly(self):
+        _kin_mod.clear_convolution_cache()
+        try:
+            K = _kin_mod._conv_matrix_cached(120, 2.5)
+            assert K.flags.writeable is False
+            out = gauss_convolve_batch(np.ones((3, 120)), 2.5)
+            assert out.shape == (3, 120)
+        finally:
+            _kin_mod.clear_convolution_cache()
 
     def test_sigma_zero_identity(self):
         K = _build_convolution_matrix(50, 0.0)

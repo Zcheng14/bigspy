@@ -13,7 +13,7 @@ from bigspy.mcmc.ssp import SSPLibrary
 from bigspy.mcmc.csp import CSPBuilder
 from bigspy.mcmc.dust import DustAttenuation
 from bigspy.mcmc.sfh import DelayedExponentialSFH
-from bigspy.mcmc.likelihood import Likelihood
+from bigspy.mcmc.likelihood import Likelihood, _LinearInterpPlan
 
 
 @pytest.fixture(scope="module")
@@ -107,3 +107,67 @@ class TestLikelihoodSynthetic:
                                 DustAttenuation.from_mode2(ssp.wave, 0.05, -0.003))
         # Observation is dust-free: applying attenuation must worsen chi2
         assert like_dusty(logZ0, sfh0) > 1.0
+
+    def test_call_batch_offset_grid(self, synth_ssp_file):
+        """call_batch on an offset obs grid (with out-of-bounds points and
+        active broadening) matches an in-test reimplementation of the
+        canonical chain: build -> broaden -> 5500-norm -> dust -> interp1d
+        -> masked chi2."""
+        from scipy.interpolate import interp1d
+
+        ssp = SSPLibrary(synth_ssp_file)
+        # Offset grid, plus one point below and one above the SSP wave range
+        obs_wave = np.concatenate([[3800.0], ssp.wave[::2] + 2.3, [7200.0]])
+        rng = np.random.RandomState(6)
+        obs_flux = rng.uniform(0.5, 2.0, len(obs_wave))
+        err = np.full(len(obs_wave), 0.02)
+        mask = np.ones(len(obs_wave), dtype=bool)
+        dust = DustAttenuation.from_mode2(ssp.wave, 0.03, -0.001)
+        like = Likelihood(ssp, obs_wave, obs_flux, err, mask, 0.0, 50.0, dust)
+
+        N = 16
+        logZ = rng.uniform(-2.0, 0.2, N)
+        params = np.column_stack([rng.uniform(0.5, 10.0, N),
+                                  rng.uniform(0.5, 8.0, N)])
+        chi2 = like.call_batch(logZ, DelayedExponentialSFH, params)
+
+        # Reference chain (verbatim, batch form — scipy's 1-D fast path
+        # differs from axis=1 interp, so keep the same 2-D call)
+        builder = CSPBuilder(ssp)
+        csp = np.array([builder.build(lz, DelayedExponentialSFH(*p))
+                        for lz, p in zip(logZ, params)])
+        csp = like.broadener.apply_batch(csp)
+        nr = like._n_range
+        mm = (ssp.wave >= nr[0]) & (ssp.wave <= nr[1])
+        norms = (np.median(csp[:, mm], axis=1) if mm.sum() > 5
+                 else np.median(csp, axis=1))
+        norms = np.where(norms == 0, 1.0, norms)
+        csp = csp / norms[:, np.newaxis]
+        csp = csp * dust._curve[np.newaxis, :]
+        model = interp1d(ssp.wave, csp, axis=1, kind='linear',
+                         bounds_error=False, fill_value=0.0)(obs_wave)
+        res = (model - like.obs_flux[np.newaxis, :]) / like.obs_error[np.newaxis, :]
+        ref = np.sum(res[:, like.obs_mask] ** 2, axis=1)
+
+        np.testing.assert_allclose(chi2, ref, rtol=1e-10)
+
+    def test_interp_plan_matches_interp1d(self):
+        """_LinearInterpPlan reproduces scipy interp1d(axis=1) exactly,
+        including out-of-range zeroing and exact grid points."""
+        from scipy.interpolate import interp1d
+
+        x_src = _synth.SSP_WAVE
+        x_new = np.concatenate([
+            [3800.0, 3999.9],            # below range
+            [x_src[0], x_src[-1]],       # exact endpoints
+            [4500.0],                    # exact interior grid point
+            x_src[::2] + 2.3,            # half-pixel offsets
+            [7000.1, 7200.0],            # above range
+        ])
+        y = np.random.RandomState(3).randn(5, len(x_src))
+
+        plan = _LinearInterpPlan(x_src, x_new)
+        out = plan.apply(y)
+        ref = interp1d(x_src, y, axis=1, kind='linear',
+                       bounds_error=False, fill_value=0.0)(x_new)
+        np.testing.assert_array_equal(out, ref)

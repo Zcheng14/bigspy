@@ -100,22 +100,6 @@ class DelayedExponentialSFH(SFHBase):
     def __repr__(self):
         return f"DelayedExpSFH(t0={self.t0:.2f}, tau={self.tau:.2f})"
 
-    @classmethod
-    def evaluate_batch(cls, timegrid, params_2d):
-        """Vectorized override — bit-identical to the generic SFHBase loop.
-
-        Like the generic loop, this uses the default ``age_universe=14.0``
-        (the batch API cannot carry per-row constructor kwargs).
-        """
-        params_2d = np.atleast_2d(np.asarray(params_2d, dtype=float))
-        t0 = params_2d[:, 0][:, None]   # param_names order: ["t0", "tau"]
-        tau = params_2d[:, 1][:, None]
-        t = np.max(timegrid) - timegrid
-        dt = t[None, :] - t0
-        sfr = np.where(dt > 0, dt * np.exp(-dt / tau), 0.0)
-        sfr = np.where(timegrid[None, :] > 14.0, 0.0, sfr)
-        return sfr
-
 
 # Set default priors after class definition (lazy import to avoid circular deps)
 from .priors import UniformPrior, LogUniformPrior, GaussianPrior

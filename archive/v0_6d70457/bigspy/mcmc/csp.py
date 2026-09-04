@@ -7,17 +7,16 @@ from .ssp import SSPLibrary  # for type hints  # noqa: F401
 class CSPBuilder:
     def __init__(self, ssp):
         self.ssp = ssp
-        # Fixed for the lifetime of the builder — precomputed once.
-        self._logZ_grid = np.log10(np.asarray(ssp.metal) / 0.02)
 
     def build(self, logZsun, sfh):
         """Build CSP at log(Z/Z_sun)."""
-        logZ_grid = self._logZ_grid
+        Z_grid = self.ssp.metal
+        logZ_grid = np.log10(Z_grid / 0.02)
         logM = logZsun
         if logM <= logZ_grid[0]:
             return self._conv(0, sfh)
         if logM >= logZ_grid[-1]:
-            return self._conv(len(logZ_grid) - 1, sfh)
+            return self._conv(len(Z_grid) - 1, sfh)
         i = np.searchsorted(logZ_grid, logM)
         f = (logM - logZ_grid[i - 1]) / (logZ_grid[i] - logZ_grid[i - 1])
         return (1 - f) * self._conv(i - 1, sfh) + f * self._conv(i, sfh)
@@ -44,33 +43,27 @@ class CSPBuilder:
         w = sfr * self.ssp.dt  # (N, n_age)
         w = w / w.sum(axis=1, keepdims=True)
 
-        logZsun_arr = np.asarray(logZsun_arr)
-        grid = self._logZ_grid
-        M = len(grid)
+        Z_grid = self.ssp.metal
+        logZ_grid = np.log10(Z_grid / 0.02)
         N = len(logZsun_arr)
         n_wave = self.ssp.n_wave
-        if N == 0:
-            return np.zeros((N, n_wave))
-        if M == 1:
-            # Degenerate single-metallicity grid: everything clamps to it.
-            return w @ self.ssp._spec[0]
+        result = np.zeros((N, n_wave))
 
-        # Metal interpolation, vectorized: group samples by their metallicity
-        # bracket (loop over metals, not samples). Identical edge semantics
-        # to the former per-sample loop (clamping / exact grid points).
-        idx = np.clip(np.searchsorted(grid, logZsun_arr), 1, M - 1)
-        f = (logZsun_arr - grid[idx - 1]) / (grid[idx] - grid[idx - 1])
-        f = np.clip(f, 0.0, 1.0)
-        lo = np.zeros((N, n_wave))
-        hi = np.zeros((N, n_wave))
-        for m in range(M):
-            sel = (idx - 1) == m
-            if sel.any():
-                lo[sel] = w[sel] @ self.ssp._spec[m]
-            sel = idx == m
-            if sel.any():
-                hi[sel] = w[sel] @ self.ssp._spec[m]
-        return (1 - f)[:, None] * lo + f[:, None] * hi
+        # Metal interpolation per sample (loop over samples is OK since N is moderate)
+        for j in range(N):
+            logM = logZsun_arr[j]
+            if logM <= logZ_grid[0]:
+                result[j] = np.dot(w[j], self.ssp._spec[0, :, :])
+            elif logM >= logZ_grid[-1]:
+                result[j] = np.dot(w[j], self.ssp._spec[-1, :, :])
+            else:
+                i = np.searchsorted(logZ_grid, logM)
+                f = (logM - logZ_grid[i-1]) / (logZ_grid[i] - logZ_grid[i-1])
+                spec_lo = np.dot(w[j], self.ssp._spec[i-1, :, :])
+                spec_hi = np.dot(w[j], self.ssp._spec[i, :, :])
+                result[j] = (1-f) * spec_lo + f * spec_hi
+
+        return result
 
     def _conv(self, mi, sfh):
         w = sfh.evaluate(self.ssp.time) * self.ssp.dt

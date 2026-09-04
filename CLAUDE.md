@@ -25,7 +25,7 @@ python -m pytest                                   # all tests (from repo root)
 python -m pytest tests/test_mcmc.py                # one file
 python -m pytest "tests/test_mcmc.py::TestPriors::test_uniform"   # one test
 python example/run_bigspy_jax.py                   # full-pipeline demo (JAX)
-python tests/benchmark_jax.py                      # NumPy vs JAX benchmark (run from repo root — relative paths)
+python benchmarks/benchmark_jax.py                 # NumPy vs JAX benchmark (run from repo root — relative paths)
 ```
 
 No linter/formatter is configured. Tests in `tests/` import `from conftest import requires_data` and **auto-skip without the reference data** (LFS-tracked `template/*.fits` and `tests/*.pkl`); run `git lfs pull` if whole suites skip.
@@ -71,4 +71,6 @@ Templates live on a log-wavelength grid, `DLOGW = 0.0001` dex → constant veloc
 
 - Binary/FITS/PNG/pkl files are **git-lfs tracked** (`.gitattributes`).
 - `example/` — runnable demos (`run_bigspy_jax.py`, notebooks). `mytest/` and `out*/` are scratch (self-ignored).
+- `benchmarks/` — old-vs-new performance benchmarks (run from repo root, e.g. `python benchmarks/benchmark_mcmc_pipeline.py`); each asserts old/new parity. Report: `benchmarks/benchmark_report.md`.
+- `archive/v0_6d70457/` — byte-identical snapshot of `src/bigspy` at commit `6d70457` (pre-optimization baseline) that the benchmarks import as the "old" side. Kept permanently; see `archive/README.md`.
 - Branches: development on `dev`, PRs target `master`.

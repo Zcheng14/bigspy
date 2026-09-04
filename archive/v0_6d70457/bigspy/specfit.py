@@ -13,7 +13,6 @@ No emission-line fitting, no stellar-population decomposition.
 """
 import pickle
 import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
 import astropy.io.fits as fits
 import os
 import lmfit
@@ -43,28 +42,23 @@ def air_to_vacuum_wave(lam):
     return lam * fact
 
 
-def _gauss_kernel(sigma, x0=0.0):
-    """Normalised Gaussian kernel (pixel units), as used by gauss_convolve."""
-    khalfsz = round(4 * sigma + abs(x0) + 3)
-    xx = np.arange(khalfsz * 2 + 1) - khalfsz
-    kernel = np.exp(-(xx - x0) ** 2 / sigma ** 2 / 2)
-    kernel /= kernel.sum()
-    return kernel
-
-
 def gauss_convolve(y, sigma, x0=0.0):
     """Convolve spectrum with a Gaussian kernel.
     sigma, x0 are in pixel units."""
     if sigma <= 0:
         return y
-    return np.convolve(y, _gauss_kernel(sigma, x0), "same")
+    khalfsz = round(4 * sigma + abs(x0) + 3)
+    xx = np.arange(khalfsz * 2 + 1) - khalfsz
+    kernel = np.exp(-(xx - x0) ** 2 / sigma ** 2 / 2)
+    kernel /= kernel.sum()
+    return np.convolve(y, kernel, "same")
 
 
-def calz_klam(wave):
-    """Calzetti+2000 k(lambda) — the wave-dependent part of calz_unred.
-
-    klam == 0 outside 912-22000 A. Precomputable once for a fixed wave
-    grid so per-iteration ebv changes only recompute 10**(0.4*klam*ebv).
+def calz_unred(wave, ebv):
+    """
+    Calzetti+2000 attenuation curve A(lambda).
+    Returns 10^(0.4 * k(lam) * ebv).
+    ebv > 0 -> deredden (brighten); ebv < 0 -> redden (dim).
     """
     wave = np.asarray(wave, dtype=float)
     x = 10000.0 / wave
@@ -81,16 +75,7 @@ def calz_klam(wave):
     p2 = np.poly1d(c2[::-1])
     klam[w2] = 2.659 * p2(x[w2]) + Rv
 
-    return klam
-
-
-def calz_unred(wave, ebv):
-    """
-    Calzetti+2000 attenuation curve A(lambda).
-    Returns 10^(0.4 * k(lam) * ebv).
-    ebv > 0 -> deredden (brighten); ebv < 0 -> redden (dim).
-    """
-    return 10.0 ** (0.4 * calz_klam(wave) * ebv)
+    return 10.0 ** (0.4 * klam * ebv)
 
 
 def ccm_unred(wave, ebv):
@@ -285,17 +270,11 @@ def _fit_residual(params, flux, error, mask, temp_pca, wave_fit,
 #  Mode 1: Calzetti
 # ═══════════════════════════════════════════════════════════════
 def _m1_residual(params, flux, error, mask, temp_pca, wave_fit,
-                 vsys, velscale, klam=None):
-    """Residual function for Mode 1 (Calzetti-only fit).
-
-    klam: precomputed calz_klam(wave_fit) for this fixed wave grid (hoisted
-    out of the lmfit iteration loop by run_mode1). None -> compute here.
-    """
+                 vsys, velscale):
+    """Residual function for Mode 1 (Calzetti-only fit)."""
     pv = params.valuesdict()
     ncomp = temp_pca.shape[1]
-    if klam is None:
-        klam = calz_klam(wave_fit)
-    curve = 10.0 ** (0.4 * klam * (-pv["ebv"]))
+    curve = calz_unred(wave_fit, -pv["ebv"])
     coeffs = np.array([pv[f"a{i}"] for i in range(ncomp)])
     model = np.dot(temp_pca, coeffs)
     model = gauss_convolve(model, pv["vd"] / velscale,
@@ -314,16 +293,15 @@ def run_mode1(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
     params.add("vd", value=sigma_dap, min=0, max=500)
     params.add("ebv", value=0.1, min=0.0, max=0.5)
     params["vd"].vary = False
-    klam = calz_klam(wave_fit)   # fixed wave grid: compute k(lambda) once
     r = lmfit.Minimizer(_m1_residual, params,
                         fcn_args=(flux, error, mask, temp_pca, wave_fit,
-                                  vsys, velscale, klam)) \
+                                  vsys, velscale)) \
           .minimize(method="leastsq")
     params = r.params
     params["vd"].vary = True
     return lmfit.Minimizer(_m1_residual, params,
                            fcn_args=(flux, error, mask, temp_pca, wave_fit,
-                                     vsys, velscale, klam)) \
+                                     vsys, velscale)) \
                  .minimize(method="leastsq")
 
 
@@ -348,19 +326,17 @@ def mean_filter(flux, wave, wave_win, mask=None):
     k = int(wave_win / 2)
     n = len(flux_tmp)
     unres = flux_tmp.copy()
-    # Vectorized sliding-window means (identical semantics to the former
-    # per-pixel loop, including the eff==0 -> 1 and mean==0 -> flux_tmp[i]
-    # fixups and the untouched first/last k pixels).
-    if n > 2 * k:
-        win_f = sliding_window_view(flux_tmp, 2 * k + 1)
+    for i in range(k, n - k):
         if mask is not None:
-            win_m = sliding_window_view(mask_tmp, 2 * k + 1)
-            eff = (win_m == 1.0).sum(axis=1)
-            eff = np.where(eff == 0, 1, eff)
-            unres[k:n - k] = (win_f * win_m).sum(axis=1) / eff
+            eff = (mask_tmp[i - k:i + k + 1] == 1.0).sum()
+            if eff == 0:
+                eff = 1
+            unres[i] = (flux_tmp[i - k:i + k + 1]
+                        * mask_tmp[i - k:i + k + 1]).sum() / eff
         else:
-            m = win_f.mean(axis=1)
-            unres[k:n - k] = np.where(m == 0.0, flux_tmp[k:n - k], m)
+            unres[i] = np.mean(flux_tmp[i - k:i + k + 1])
+            if unres[i] == 0:
+                unres[i] = flux_tmp[i]
     return np.interp(wave, wave_tmp, flux_tmp - unres)
 
 
@@ -398,56 +374,47 @@ def run_mode2(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
     slr2 = flux_s1 / flux_L1
     slr_obs = np.where(slr1 > slr2, slr1, slr2)
 
-    # Template S/L (kernel fixed for the whole loop: build it once)
+    # Template S/L
     t_s = np.zeros((ncomp, npx))
     t_L = np.zeros((ncomp, npx))
     t_sLe = np.zeros((npx, ncomp))
-    sigma0 = vd0 / velscale
-    kernel = _gauss_kernel(sigma0, (ve0 + vsys) / velscale) if sigma0 > 0 else None
-    wtmp = wave_temp[it1:it1 + npx]
     for i in range(ncomp):
-        if kernel is None:  # vd0 <= 0: gauss_convolve is a no-op
-            ssp = pca_full[i, :]
-        else:
-            ssp = np.convolve(pca_full[i, :], kernel, "same")
+        ssp = gauss_convolve(pca_full[i, :].copy(), vd0 / velscale,
+                             (ve0 + vsys) / velscale)
         ssp = ssp[it1:it1 + npx]
         t_sLe[:, i] = ssp
-        t_s[i, :] = mean_filter(ssp, wtmp, wave_win)
+        t_s[i, :] = mean_filter(ssp, wave_temp[it1:it1 + npx], wave_win)
         t_L[i, :] = ssp - t_s[i, :]
 
     mask[flux / (error + 1e-30) < (snr / 4)] = 0.0
     if mask.sum() == 0:
         mask[0] = 1.0
 
-    # Iterative ebv scan (loop invariants hoisted: mask/g, flux/error on g,
-    # k(lambda) on wave_c, es — none change between iterations)
+    # Iterative ebv scan
     ebv_m1 = result_m1.params["ebv"].value
     best_redchi = np.inf
     best_wei = None
     best_mask = mask.copy()
-    klam_c = calz_klam(wave_c)
-    g = (mask == 1)
-    if g.sum() >= ncomp:
-        flux_g = flux[g] / error[g]
-        err_col_g = (error[:, np.newaxis] + 1e-30)[g]
-        t_sLe_g = t_sLe[g]
+    for k in range(ebv_sl_n):
+        tmp_ebv = ebv_m1 + (k - (ebv_sl_n - 1) / 2.0) * 0.02
+        sLe_d = (t_sLe * calz_unred(wave_c, -tmp_ebv)[:, np.newaxis]
+                 / (error[:, np.newaxis] + 1e-30))
+        g = (mask == 1)
+        if g.sum() < ncomp:
+            continue
+        wei_k = np.linalg.lstsq(sLe_d[g, :], flux[g] / error[g], rcond=None)[0]
+        s_m = np.dot(wei_k, t_s)
+        L_m = np.dot(wei_k, t_L)
+        slr_m = s_m / np.where(np.abs(L_m) < 1e-30, 1e-30, L_m)
         es = error / np.abs(flux_L1 + 1e-30)
-        for k in range(ebv_sl_n):
-            tmp_ebv = ebv_m1 + (k - (ebv_sl_n - 1) / 2.0) * 0.02
-            curve_g = 10.0 ** (0.4 * klam_c[g] * (-tmp_ebv))
-            sLe_d = t_sLe_g * curve_g[:, np.newaxis] / err_col_g
-            wei_k = np.linalg.lstsq(sLe_d, flux_g, rcond=None)[0]
-            s_m = np.dot(wei_k, t_s)
-            L_m = np.dot(wei_k, t_L)
-            slr_m = s_m / np.where(np.abs(L_m) < 1e-30, 1e-30, L_m)
-            gs = g & np.isfinite(slr_m) & np.isfinite(slr_obs)
-            if gs.sum() < ncomp:
-                continue
-            rc = np.sum(((slr_m[gs] - slr_obs[gs]) / es[gs]) ** 2) / gs.sum()
-            if rc < best_redchi and rc > 0:
-                best_redchi = rc
-                best_wei = wei_k
-                best_mask = mask.copy()
+        gs = g & np.isfinite(slr_m) & np.isfinite(slr_obs)
+        if gs.sum() < ncomp:
+            continue
+        rc = np.sum(((slr_m[gs] - slr_obs[gs]) / es[gs]) ** 2) / gs.sum()
+        if rc < best_redchi and rc > 0:
+            best_redchi = rc
+            best_wei = wei_k
+            best_mask = mask.copy()
 
     if best_wei is None:
         return {"p1": 0.0, "p2": 0.0, "ebv": ebv_m1, "chi2r": 0.0,

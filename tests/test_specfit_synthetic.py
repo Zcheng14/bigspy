@@ -14,7 +14,7 @@ import _synth
 from bigspy import SpecFit, SpecFitResult
 from bigspy.io import read_specfit_fits, write_observed_fits
 from bigspy.specfit import (
-    C, DLOGW, calz_unred, ccm_unred, gauss_convolve,
+    C, DLOGW, calz_unred, calz_klam, ccm_unred, gauss_convolve,
     load_pca_templates, preprocess_spectrum, fit_spectrum,
     run_mode2, mean_filter, _A_lambda_fcn, save_results,
 )
@@ -33,6 +33,20 @@ def synth_prep(synth_pca_file):
 def synth_fit(synth_prep):
     prep, pca, wave_temp, velscale, data = synth_prep
     return fit_spectrum(prep, pca, wave_temp, mode="both")
+
+
+@pytest.fixture(scope="module")
+def synth_prep_ebv(synth_pca_file):
+    pca, wave_temp, velscale = load_pca_templates(synth_pca_file)
+    data, model = _synth.make_synthetic_obs(ebv=0.15)
+    prep = preprocess_spectrum(data, wave_temp, pca)
+    return prep, pca, wave_temp, velscale, data
+
+
+@pytest.fixture(scope="module")
+def synth_fit_ebv(synth_prep_ebv):
+    prep, pca, wave_temp, velscale, data = synth_prep_ebv
+    return fit_spectrum(prep, pca, wave_temp, mode="m1")
 
 
 # ── ccm_unred ──────────────────────────────────────────────────────
@@ -95,6 +109,71 @@ class TestMeanFilter:
         detail = mean_filter(flux, wave, 200.0, mask=mask)
         assert detail[p] > 1.0
         assert np.median(np.abs(detail)) < 1e-10
+
+    @staticmethod
+    def _naive_mean_filter(flux, wave, wave_win, mask=None):
+        """Verbatim copy of the original per-pixel-loop implementation."""
+        n_wave = len(wave)
+        wmin = int(np.ceil(wave[0]))
+        wmax = int(np.floor(wave[-1]))
+        wave_tmp = np.arange(wmin, wmax + 1, dtype=float)
+        flux_tmp = np.interp(wave_tmp, wave, flux)
+        if mask is not None:
+            mask_tmp = np.interp(wave_tmp, wave, mask)
+            mask_tmp[mask_tmp > 0] = 1.0
+            if mask_tmp.sum() == 0:
+                mask_tmp[0] = 1.0
+            u = np.where(mask_tmp == 1.0)[0]
+            mask_tmp[:u[0] + 1] = 1.0
+            mask_tmp[u[-1]:] = 1.0
+        k = int(wave_win / 2)
+        n = len(flux_tmp)
+        unres = flux_tmp.copy()
+        for i in range(k, n - k):
+            if mask is not None:
+                eff = (mask_tmp[i - k:i + k + 1] == 1.0).sum()
+                if eff == 0:
+                    eff = 1
+                unres[i] = (flux_tmp[i - k:i + k + 1]
+                            * mask_tmp[i - k:i + k + 1]).sum() / eff
+            else:
+                unres[i] = np.mean(flux_tmp[i - k:i + k + 1])
+                if unres[i] == 0:
+                    unres[i] = flux_tmp[i]
+        return np.interp(wave, wave_tmp, flux_tmp - unres)
+
+    def test_matches_naive_reference(self):
+        """Vectorized mean_filter == original per-pixel loop exactly."""
+        wave = np.linspace(4000, 5000, 1001)  # matches the internal 1 A grid
+        rng = np.random.RandomState(9)
+        flux = rng.uniform(0.5, 2.0, 1001)
+        mask_all = np.ones(1001)
+        mask_rand = (rng.uniform(0, 1, 1001) > 0.2).astype(float)  # ~20% zeroed
+        for wave_win in (200.0, 400.0):
+            for mask in (None, mask_all, mask_rand):
+                detail = mean_filter(flux, wave, wave_win, mask=mask)
+                ref = self._naive_mean_filter(flux, wave, wave_win, mask=mask)
+                np.testing.assert_array_equal(detail, ref)
+
+    def test_edge_pixels_untouched(self):
+        """First/last k pixels keep the input value -> detail == 0 there."""
+        wave = np.linspace(4000, 5000, 1001)
+        flux = np.linspace(1.0, 2.0, 1001)
+        k = 100  # wave_win=200 on a 1 A grid
+        detail = mean_filter(flux, wave, 200.0)
+        np.testing.assert_array_equal(detail[:k], np.zeros(k))
+        np.testing.assert_array_equal(detail[-k:], np.zeros(k))
+
+    def test_window_wider_than_array(self):
+        """k >= n: the loop body was empty -> detail all zeros, no crash."""
+        wave = np.linspace(4000, 4050, 51)
+        flux = np.random.RandomState(10).uniform(0.5, 2.0, 51)
+        mask = np.ones(51)
+        mask[10] = 0.0
+        detail = mean_filter(flux, wave, 200.0)
+        assert np.max(np.abs(detail)) < 1e-15
+        detail_m = mean_filter(flux, wave, 200.0, mask=mask)
+        assert np.max(np.abs(detail_m)) < 1e-15
 
 
 # ── _A_lambda_fcn ──────────────────────────────────────────────────
@@ -185,6 +264,55 @@ class TestRunMode1Synthetic:
         assert np.all(np.isfinite(synth_fit["ve"]))
         assert np.all(np.isfinite(synth_fit["vd"]))
 
+    def test_recovers_known_ebv(self, synth_prep_ebv, synth_fit_ebv):
+        """Truth reddened with Calzetti ebv=0.15: mode 1 recovers it."""
+        prep = synth_prep_ebv[0]
+        r1 = synth_fit_ebv["mode1_result"]
+        assert abs(r1.params["ebv"].value - 0.15) < 0.05
+        assert r1.redchi < 2.0
+        corr = np.corrcoef(synth_fit_ebv["mode1_model"], prep["flux_raw"])[0, 1]
+        assert corr > 0.999
+
+
+# ── calz_klam (Calzetti k(lambda)) ─────────────────────────────────
+class TestCalzKlam:
+    @staticmethod
+    def _klam_ref(wave):
+        """Verbatim copy of the k(lambda) construction inside calz_unred."""
+        wave = np.asarray(wave, dtype=float)
+        x = 10000.0 / wave
+        klam = np.zeros_like(x)
+        Rv = 4.05
+        w1 = (wave >= 6300) & (wave <= 22000)
+        klam[w1] = 2.659 * (-1.857 + 1.040 * x[w1]) + Rv
+        w2 = (wave >= 912) & (wave < 6300)
+        c2 = np.array([-2.156, 1.509, -0.198, 0.011])
+        p2 = np.poly1d(c2[::-1])
+        klam[w2] = 2.659 * p2(x[w2]) + Rv
+        return klam
+
+    def test_klam_reproduces_calz_unred(self):
+        w = np.linspace(900, 25000, 4001)   # crosses 912 / 6300 / 22000 edges
+        for ebv in (0.0, 0.1, -0.2):
+            np.testing.assert_array_equal(
+                10.0 ** (0.4 * self._klam_ref(w) * ebv), calz_unred(w, ebv))
+
+    def test_klam_branch_edges(self):
+        k = self._klam_ref
+        assert k(np.array([800.0]))[0] == 0.0       # below 912 A
+        assert k(np.array([25000.0]))[0] == 0.0     # above 22000 A
+        x = 10000.0 / 5000.0                        # poly branch (912-6300)
+        assert k(np.array([5000.0]))[0] == pytest.approx(
+            2.659 * np.polyval(np.array([0.011, -0.198, 1.509, -2.156]), x)
+            + 4.05, rel=1e-12)
+        x = 10000.0 / 7000.0                        # linear branch (6300-22000)
+        assert k(np.array([7000.0]))[0] == pytest.approx(
+            2.659 * (-1.857 + 1.040 * x) + 4.05, rel=1e-12)
+
+    def test_module_klam_matches_reference(self):
+        w = np.linspace(900, 25000, 4001)
+        np.testing.assert_array_equal(calz_klam(w), self._klam_ref(w))
+
 
 class TestRunMode2Synthetic:
     def test_dust_branch_returns_full_dict(self, synth_prep, synth_fit):
@@ -222,6 +350,25 @@ class TestRunMode2Synthetic:
         assert m2["p1"] == 0.0
         assert m2["p2"] == 0.0
         assert len(m2["dust_wave"]) == 0
+
+    def test_deterministic_repeat(self, synth_prep, synth_fit):
+        """Two calls on identical fresh inputs give identical results
+        (run_mode2 mutates its mask argument, so pass fresh copies)."""
+        prep, pca, wave_temp, velscale, data = synth_prep
+        runs = []
+        for _ in range(2):
+            mask = prep["mask"].copy()
+            runs.append(run_mode2(prep["flux"], prep["error"], mask,
+                                  prep["temp_pca"], prep["wave"], prep["vsys"],
+                                  velscale, 0.0, 0.0,
+                                  synth_fit["mode1_result"],
+                                  pca, prep["it1"], wave_temp))
+        m2a, m2b = runs
+        for key in ("p1", "p2", "ebv", "chi2r"):
+            assert m2a[key] == m2b[key]
+        np.testing.assert_array_equal(m2a["slr_flux"], m2b["slr_flux"])
+        np.testing.assert_array_equal(m2a["dust_wave"], m2b["dust_wave"])
+        np.testing.assert_array_equal(m2a["dust_A"], m2b["dust_A"])
 
 
 # ── SpecFitResult direct construction ──────────────────────────────

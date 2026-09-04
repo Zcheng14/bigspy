@@ -83,3 +83,35 @@ class TestCSPBuilder:
         for j in range(2):
             expected = builder.build(logZ[j], DelayedExponentialSFH(*params[j]))
             np.testing.assert_allclose(batch[j], expected, atol=1e-12)
+
+    def test_build_batch_grid_exact(self, builder):
+        """Batch == per-sample build() at exact grid points, midpoints, and
+        outside the grid on both sides."""
+        g = _synth.SSP_LOGZ_GRID
+        logZ = np.concatenate([g, 0.5 * (g[:-1] + g[1:]), [-5.0, 1.0]])
+        params = np.tile(np.array([[1.0, 3.0]]), (len(logZ), 1))
+
+        batch = builder.build_batch(logZ, params, DelayedExponentialSFH)
+        loop = np.array([
+            builder.build(lz, DelayedExponentialSFH(1.0, 3.0)) for lz in logZ
+        ])
+        np.testing.assert_allclose(batch, loop, atol=1e-12)
+
+    def test_build_batch_large_n_parity(self, builder):
+        """N=64 mixed interior/edge/exact-grid logZ values: batch == loop."""
+        rng = np.random.RandomState(13)
+        N = 64
+        logZ = rng.uniform(-2.4, 0.4, N)
+        logZ[:3] = _synth.SSP_LOGZ_GRID   # exact grid points sprinkled in
+        logZ[8] = -5.0
+        logZ[9] = 1.0
+        t0 = rng.uniform(0.5, 10.0, N)
+        tau = rng.uniform(0.5, 8.0, N)
+        params = np.column_stack([t0, tau])
+
+        batch = builder.build_batch(logZ, params, DelayedExponentialSFH)
+        loop = np.array([
+            builder.build(lz, DelayedExponentialSFH(to, ta))
+            for lz, to, ta in zip(logZ, t0, tau)
+        ])
+        np.testing.assert_allclose(batch, loop, atol=1e-12)
