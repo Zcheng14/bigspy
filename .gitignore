@@ -7,6 +7,9 @@ __pycache__/
 
 # Output
 out_notebook/
+# Example/benchmark run artifacts (reproducible; kept out of the repo)
+out/example_run.log
+out/benchmarks/
 *.ipynb_checkpoints/
 
 # IDE
