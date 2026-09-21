@@ -16,7 +16,7 @@ from bigspy.mcmc.csp import CSPBuilder  # noqa: E402
 from bigspy.mcmc.dust import DustAttenuation  # noqa: E402
 from bigspy.mcmc.sfh import DelayedExponentialSFH  # noqa: E402
 from bigspy.mcmc.likelihood import Likelihood  # noqa: E402
-from bigspy.mcmc.likelihood_jax import JAXLikelihood, _build_conv_matrix  # noqa: E402
+from bigspy.mcmc.likelihood_jax import JAXLikelihood, _build_conv_kernel  # noqa: E402
 from bigspy.mcmc.kinematics import _build_convolution_matrix  # noqa: E402
 
 
@@ -34,11 +34,16 @@ def pair(synth_ssp_file):
     return like, jlike
 
 
-class TestBuildConvMatrix:
-    def test_equivalence_kinematics_x0_zero(self):
-        a = _build_conv_matrix(150, 2.5)
-        b = _build_convolution_matrix(150, 2.5, 0.0)
-        np.testing.assert_allclose(a, b, atol=1e-12)
+class TestBuildConvKernel:
+    def test_kernel_matches_dense_matrix_x0_zero(self):
+        """JAX's 1D convolution kernel reproduces NumPy's dense convolution
+        matrix (built at x0=0) when applied with ``mode='same'``."""
+        n, sigma = 150, 2.5
+        kernel = _build_conv_kernel(sigma)
+        dense = _build_convolution_matrix(n, sigma, 0.0)
+        x = np.random.RandomState(0).randn(n)
+        np.testing.assert_allclose(
+            np.convolve(x, kernel, mode="same"), dense @ x, atol=1e-12)
 
 
 class TestJAXParity:
