@@ -26,8 +26,12 @@ dependencies = [
     "astropy>=5.0",
     "lmfit>=1.0",
     "ultranest>=3.6",
+    # UltraNest's default HDF5 point store imports h5py at runtime.
+    "h5py>=3.0",
     "matplotlib>=3.5",
     "corner>=2.2",
+    # JAX powers the default accelerated batch likelihood (MCMCFitter(use_jax=True));
+    # the fitter falls back to NumPy if JAX is unavailable.
     "jax>=0.4",
     "jaxlib>=0.4",
 ]

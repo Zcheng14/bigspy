@@ -1,4 +1,5 @@
 # UltraNest wrapper with prior support
+import logging
 import os
 import numpy as np
 
@@ -108,9 +109,30 @@ class UltraNestSampler:
         chi2 = self.like.call_batch(logZsun_arr, self.sfh_class, sfh_params_2d)
         return -0.5 * chi2
 
+    @staticmethod
+    def _reset_ultranest_log_handlers():
+        """Give the upcoming UltraNest run a fresh ``debug.log``.
+
+        UltraNest's ``create_logger`` only attaches its ``debug.log``
+        FileHandler the first time it is called in a process (it checks
+        ``logger.handlers``). Without this, every run after the first keeps
+        appending to the *first* run's ``debug.log`` and the later chain
+        directories never get one. Detaching the existing handlers makes
+        UltraNest treat the next run as the first, recreating the file and
+        stdout handlers for the current ``log_dir``.
+        """
+        logger = logging.getLogger("ultranest")
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
     def run(self, min_live_points=400, max_ncalls=None, frac_remain=0.5, **kwargs):
         """Run UltraNest sampling."""
         import ultranest
+        self._reset_ultranest_log_handlers()
         self.sampler = ultranest.ReactiveNestedSampler(
             self.param_names, self.loglike, self.prior_transform,
             log_dir=self.out_dir, resume="overwrite", vectorized=True)

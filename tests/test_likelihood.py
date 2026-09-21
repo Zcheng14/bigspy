@@ -65,7 +65,11 @@ class TestLikelihoodSynthetic:
         ])
         chi2_batch = like.call_batch(logZ, DelayedExponentialSFH, params)
         assert chi2_batch.shape == (N,)
-        np.testing.assert_allclose(chi2_batch, chi2_loop, rtol=1e-10)
+        # The synthetic library makes every CSP shape identical, so for the
+        # random parameters the exact chi2 is 0 and only floating-point noise
+        # (~1e-23) remains. Compare with an absolute tolerance so the check
+        # tests batch/loop equivalence rather than rounding in either path.
+        np.testing.assert_allclose(chi2_batch, chi2_loop, rtol=1e-10, atol=1e-20)
 
     def test_masked_pixels_excluded(self, synth_setup):
         like, logZ0, sfh0, model, err, mask = synth_setup

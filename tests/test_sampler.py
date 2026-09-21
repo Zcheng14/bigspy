@@ -109,6 +109,23 @@ class TestRun:
         assert post.ndim == 2 and post.shape[1] == 3 and post.shape[0] > 50
         assert np.isfinite(result["logz"])
 
+    def test_each_run_writes_its_own_debug_log(self, stub, tmp_path):
+        """Regression: consecutive runs must not share the first debug.log.
+
+        UltraNest only attaches its debug.log FileHandler the first time it
+        runs in a process, so without resetting the logger the second run's
+        chain directory never gets a debug.log (everything is appended to the
+        first one's).
+        """
+        d1, d2 = tmp_path / "run1", tmp_path / "run2"
+        UltraNestSampler(stub, str(d1), "delayed").run(
+            min_live_points=20, max_ncalls=400)
+        UltraNestSampler(stub, str(d2), "delayed").run(
+            min_live_points=20, max_ncalls=400)
+        log1, log2 = d1 / "debug.log", d2 / "debug.log"
+        assert log1.is_file() and log1.stat().st_size > 0
+        assert log2.is_file() and log2.stat().st_size > 0
+
     def test_fake_result_dict(self, stub, tmp_path):
         s = UltraNestSampler(stub, str(tmp_path / "c7"), "delayed")
         s.result = {
