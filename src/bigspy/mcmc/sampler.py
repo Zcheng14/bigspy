@@ -106,6 +106,16 @@ class NSSampler:
         self._state = None
         self._seed = None
 
+    @property
+    def fixed_params(self):
+        """Parameters held fixed via :class:`FixedPrior` (name -> value).
+
+        These are excluded from sampling (and from ``param_names`` /
+        ``get_posterior()``) but reported by result containers so that
+        model spectra can be rebuilt with the full parameter set.
+        """
+        return dict(self._fixed_params)
+
     # ── internal: cube -> physical ─────────────────────────────────
     def _physical_batch(self, cube):
         """Unit-cube batch (N, n_active) -> dict {name: (N,) physical}."""

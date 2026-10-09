@@ -105,12 +105,12 @@ def make_synthetic_obs(noise=0.002, seed=42, ebv=0.0):
     """Build a synthetic observed spectrum + matching data dict for preprocess.
 
     Truth: flat-ish Legendre-PCA combo (first 10 comps), no broadening,
-    z=0.01, all pixels good (mask 0 = good convention). With ``ebv != 0``
+    z=0.01, all pixels good (mask 1 = good convention). With ``ebv != 0``
     the rest-frame truth is reddened by Calzetti E(B-V)=ebv (flux and
     error scaled by the same curve so SNR is wavelength-independent).
     Returns (data_dict, model_rest_frame_on_the_log_grid).
     """
-    from bigspy.specfit import calz_unred
+    from bigspy.utils import calz_attenuation
 
     rng = np.random.RandomState(seed)
     rows = pca_rows()
@@ -122,7 +122,7 @@ def make_synthetic_obs(noise=0.002, seed=42, ebv=0.0):
         flux_obs = model + rng.normal(0.0, noise, N_WAVE_LOG)
         error_obs = np.full(N_WAVE_LOG, noise)
     else:
-        curve = calz_unred(PCA_WAVE_LOG, -ebv)     # redden (dim) the truth
+        curve = calz_attenuation(PCA_WAVE_LOG, ebv)  # redden (dim) the truth
         flux_obs = model * curve + rng.normal(0.0, noise, N_WAVE_LOG) * curve
         error_obs = np.full(N_WAVE_LOG, noise) * curve
     data = {
@@ -130,7 +130,7 @@ def make_synthetic_obs(noise=0.002, seed=42, ebv=0.0):
         "ebv_mw": 0.0,
         "wave_obs": PCA_WAVE_LOG * (1.0 + SYN_Z),
         "flux_obs": flux_obs,
-        "mask_obs": np.zeros(N_WAVE_LOG),          # 0 = good
+        "mask_obs": np.ones(N_WAVE_LOG),           # 1 = good
         "error_obs": error_obs,
         "sigma_dap": 100.0,
     }

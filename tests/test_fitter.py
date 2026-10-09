@@ -35,6 +35,7 @@ class _FakeSampler:
         rng = np.random.RandomState(seed)
         self.param_names = ["t0", "tau", "logZsun"]
         self.sfh_class = DelayedExponentialSFH
+        self.fixed_params = {}
         self._best = np.array([5.0, 3.0, -1.0])
         self._post = np.column_stack([rng.normal(5.0, 1.0, n),
                                       rng.normal(3.0, 0.5, n),
@@ -46,6 +47,17 @@ class _FakeSampler:
 
     def get_posterior(self):
         return self._post
+
+
+class _FakeSamplerFixedLogZ(_FakeSampler):
+    """Sampler with logZsun held fixed (excluded from the posterior)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.param_names = ["t0", "tau"]
+        self.fixed_params = {"logZsun": -0.5}
+        self._best = np.array([5.0, 3.0])
+        self._post = self._post[:, :2]
 
 
 class TestMCMCResult:
@@ -78,6 +90,31 @@ class TestMCMCResult:
     def test_plots_write_png(self, synth_model, tmp_path):
         pytest.importorskip("corner")
         res = MCMCResult(_FakeSampler(), synth_model)
+        for meth, name in ((res.plot_corner, "corner.png"),
+                           (res.plot_bestfit, "bestfit.png"),
+                           (res.plot_sfh, "sfh.png")):
+            p = str(tmp_path / name)
+            meth(p)
+            assert os.path.exists(p) and os.path.getsize(p) > 1000
+
+
+class TestMCMCResultFixedParams:
+    """FixedPrior parameters are reported in bestfit but not posterior."""
+
+    def test_bestfit_merges_fixed_params(self, synth_model):
+        res = MCMCResult(_FakeSamplerFixedLogZ(), synth_model)
+        assert res.bestfit == {"t0": 5.0, "tau": 3.0, "logZsun": -0.5}
+        assert res.posterior.shape[1] == 2
+
+    def test_bestfit_model_uses_fixed_value(self, synth_model):
+        res = MCMCResult(_FakeSamplerFixedLogZ(), synth_model)
+        expected = synth_model.build_model(
+            -0.5, DelayedExponentialSFH(t0=5.0, tau=3.0))
+        np.testing.assert_allclose(res.bestfit_model(), expected, rtol=1e-12)
+
+    def test_plots_align_with_active_params(self, synth_model, tmp_path):
+        pytest.importorskip("corner")
+        res = MCMCResult(_FakeSamplerFixedLogZ(), synth_model)
         for meth, name in ((res.plot_corner, "corner.png"),
                            (res.plot_bestfit, "bestfit.png"),
                            (res.plot_sfh, "sfh.png")):
@@ -127,3 +164,15 @@ class TestMCMCFitter:
               max_ncalls=400)
         st = load_state(str(out / "state.npz"))
         assert "posterior" in st and "logz" in st
+
+    def test_run_with_fixed_prior(self, synth_ssp_file):
+        """Fixed SFH param: excluded from posterior, present in bestfit,
+        and model rebuilding (previously TypeError) works."""
+        from bigspy import FixedPrior
+        f = self._make(synth_ssp_file)
+        res = f.run(n_live=20, num_delete=10, num_inner_steps=4,
+                    max_ncalls=400, priors={"tau": FixedPrior(3.0)})
+        assert res.bestfit["tau"] == 3.0
+        assert set(res.bestfit) == {"t0", "tau", "logZsun"}
+        assert res.posterior.shape[1] == 2   # t0, logZsun
+        assert len(res.bestfit_model()) == len(res.model.obs_wave)

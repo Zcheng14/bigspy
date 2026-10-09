@@ -31,6 +31,54 @@ def median_in_window(wave, flux, mask, window):
                  else np.median(flux[mask]))
 
 
+# ── Calzetti+2000 dust law ───────────────────────────────────────
+# Canonical home of the Calzetti law.  Two explicitly named wrappers
+# replace the former pair of sign-flipped ``calz_unred`` functions:
+#
+# * ``calz_attenuation`` -- multiplies MODEL flux (positive ebv dims).
+# * ``calz_deredden``    -- multiplies OBSERVED flux (positive ebv brightens).
+
+def calz_klam(wave):
+    """Calzetti+2000 k(lambda) — the wavelength-dependent part of the law.
+
+    k == 0 outside 912-22000 A.  Precompute once for a fixed wavelength
+    grid so per-iteration ebv changes only recompute the exponential.
+    """
+    wave = np.asarray(wave, dtype=float)
+    x = 10000.0 / wave
+    klam = np.zeros_like(x)
+    Rv = 4.05
+
+    # 6300-22000 A
+    w1 = (wave >= 6300) & (wave <= 22000)
+    klam[w1] = 2.659 * (-1.857 + 1.040 * x[w1]) + Rv
+
+    # 912-6300 A
+    w2 = (wave >= 912) & (wave < 6300)
+    c2 = np.array([-2.156, 1.509, -0.198, 0.011])
+    p2 = np.poly1d(c2[::-1])
+    klam[w2] = 2.659 * p2(x[w2]) + Rv
+
+    return klam
+
+
+def calz_attenuation(wave, ebv):
+    """Dust attenuation factor for MODEL spectra: ``10**(-0.4 * k * ebv)``.
+
+    Positive ``ebv`` dims (reddens) the model; multiply model flux by this.
+    """
+    return 10.0 ** (-0.4 * calz_klam(wave) * ebv)
+
+
+def calz_deredden(wave, ebv):
+    """De-reddening factor for OBSERVED spectra: ``10**(+0.4 * k * ebv)``.
+
+    Positive ``ebv`` brightens (de-reddens) the data; multiply observed
+    flux by this.  ``calz_deredden(w, e) == 1 / calz_attenuation(w, e)``.
+    """
+    return 10.0 ** (0.4 * calz_klam(wave) * ebv)
+
+
 def rebin(x, y, x0=None, dlogx=None):
     """Rebin spectrum to a new wavelength grid with flux conservation.
 

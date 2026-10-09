@@ -23,6 +23,9 @@ import matplotlib
 from .constants import (C_LIGHT as C, DLOGW, DLOGW_VEL, NEIG, FIT_NEIG,
                         WAVE_NORM)
 
+# ── Calzetti dust law (canonical home: bigspy.utils) ───────────
+from .utils import calz_klam, calz_attenuation
+
 # ── Emission-line masks for preprocessing ──────────────────────
 from .mask import EMISSION_LINES as _EM_DICT
 _EM_LINES = list(_EM_DICT.values())
@@ -46,39 +49,6 @@ def gauss_convolve(y, sigma, x0=0.0):
     if sigma <= 0:
         return y
     return np.convolve(y, _gauss_kernel(sigma, x0), "same")
-
-
-def calz_klam(wave):
-    """Calzetti+2000 k(lambda) — the wave-dependent part of calz_unred.
-
-    klam == 0 outside 912-22000 A. Precomputable once for a fixed wave
-    grid so per-iteration ebv changes only recompute 10**(0.4*klam*ebv).
-    """
-    wave = np.asarray(wave, dtype=float)
-    x = 10000.0 / wave
-    klam = np.zeros_like(x)
-    Rv = 4.05
-
-    # 6300-22000 A
-    w1 = (wave >= 6300) & (wave <= 22000)
-    klam[w1] = 2.659 * (-1.857 + 1.040 * x[w1]) + Rv
-
-    # 912-6300 A
-    w2 = (wave >= 912) & (wave < 6300)
-    c2 = np.array([-2.156, 1.509, -0.198, 0.011])
-    p2 = np.poly1d(c2[::-1])
-    klam[w2] = 2.659 * p2(x[w2]) + Rv
-
-    return klam
-
-
-def calz_unred(wave, ebv):
-    """
-    Calzetti+2000 attenuation curve A(lambda).
-    Returns 10^(0.4 * k(lam) * ebv).
-    ebv > 0 -> deredden (brighten); ebv < 0 -> redden (dim).
-    """
-    return 10.0 ** (0.4 * calz_klam(wave) * ebv)
 
 
 def ccm_unred(wave, ebv):
@@ -156,6 +126,8 @@ def load_test_spectrum(path):
     -------
     dict with keys: z, ebv_mw, wave_obs, flux_obs, mask_obs,
                     error_obs, sigma_dap.
+        ``mask_obs`` uses the library-wide convention 1 = good pixel
+        (converted here from the raw DAP-style 0 = good bitmask).
     """
     with open(path, "rb") as f:
         z_gal, ebv_mw, w_obs, s_obs, m_obs, e_obs, sig_dap, _ = \
@@ -165,7 +137,7 @@ def load_test_spectrum(path):
         "ebv_mw": float(ebv_mw),
         "wave_obs": w_obs,
         "flux_obs": s_obs,
-        "mask_obs": m_obs,
+        "mask_obs": (m_obs == 0).astype(float),
         "error_obs": e_obs,
         "sigma_dap": float(sig_dap),
     }
@@ -174,7 +146,8 @@ def load_test_spectrum(path):
 # ═══════════════════════════════════════════════════════════════
 #  Preprocessing
 # ═══════════════════════════════════════════════════════════════
-def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400)):
+def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400),
+                        emission_lines=None):
     """Preprocess an observed spectrum for PCA fitting.
 
     Steps:
@@ -188,13 +161,17 @@ def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400)):
     Parameters
     ----------
     data : dict
-        Output of load_test_spectrum().
+        Output of load_test_spectrum().  ``mask_obs`` uses the
+        library-wide convention 1 = good pixel.
     wave_temp : ndarray
         Template wavelength grid.
     pca_all : ndarray
-        Full PCA component array (NEIG x n_wave).
+        PCA component array (n_comp x n_wave).
     fit_range : tuple
         Rest-frame wavelength range for fitting.
+    emission_lines : list of (lo, hi), optional
+        Emission-line regions to mask.  Defaults to the built-in
+        ``mask.EMISSION_LINES`` table.
 
     Returns
     -------
@@ -206,11 +183,16 @@ def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400)):
     flux = data["flux_obs"] * mw
     err = data["error_obs"] * mw
     wave_rest = data["wave_obs"] / (1.0 + z)
-    mask_full = (data["mask_obs"] == 0).astype(float)
+    mask_full = np.asarray(data["mask_obs"], dtype=float)  # 1 = good
     ok = ((wave_rest >= fit_range[0]) & (wave_rest <= fit_range[1])
           & (mask_full == 1) & np.isfinite(err) & (err > 0))
     ok[:5] = False
     ok[-5:] = False
+    if not ok.any():
+        raise ValueError(
+            f"No usable pixels in rest-frame range {fit_range}: check "
+            "the mask (convention: 1 = good pixel) and that the errors "
+            "are finite and positive.")
     i0 = np.where(ok)[0][0]
     i1 = np.where(ok)[0][-1] + 1
     npix = i1 - i0
@@ -223,7 +205,8 @@ def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400)):
     ff = flux[i0:i1]
     ef = err[i0:i1]
     mf = np.ones(npix, dtype=float)
-    for lo, hi in _EM_LINES:
+    lines = _EM_LINES if emission_lines is None else emission_lines
+    for lo, hi in lines:
         mf[(wf >= lo) & (wf <= hi)] = 0.0
     i55 = np.argmin(np.abs(wf - 5500))
     norm_f5500 = ff[i55]
@@ -257,7 +240,7 @@ def _m1_residual(params, flux, error, mask, temp_pca, wave_fit,
     ncomp = temp_pca.shape[1]
     if klam is None:
         klam = calz_klam(wave_fit)
-    curve = 10.0 ** (0.4 * klam * (-pv["ebv"]))
+    curve = 10.0 ** (-0.4 * klam * pv["ebv"])  # attenuate (redden) the model
     coeffs = np.array([pv[f"a{i}"] for i in range(ncomp)])
     model = np.dot(temp_pca, coeffs)
     model = gauss_convolve(model, pv["vd"] / velscale,
@@ -270,7 +253,8 @@ def run_mode1(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
     """Two-stage Mode 1 fit: initial with fixed vd, then free all."""
     x0 = np.linalg.lstsq(temp_pca, flux, rcond=None)[0]
     params = lmfit.Parameters()
-    for i in range(FIT_NEIG):
+    ncomp = temp_pca.shape[1]
+    for i in range(ncomp):
         params.add(f"a{i}", value=x0[i])
     params.add("ve", value=0.0, min=-500, max=500)
     params.add("vd", value=sigma_dap, min=0, max=500)
@@ -339,7 +323,11 @@ def _A_lambda_fcn(params, wave, data, fit=True):
 
 def run_mode2(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
               ve0, vd0, result_m1, pca_full, it1, wave_temp, ebv_sl_n=9):
-    """Mode 2 S/L fit: separate smooth and line components with free dust."""
+    """Mode 2 S/L fit: separate smooth and line components with free dust.
+
+    The input ``mask`` is copied internally and never modified in place.
+    """
+    mask = np.asarray(mask, dtype=float).copy()
     npx, ncomp = len(flux), temp_pca.shape[1]
     wave_c = wave_fit / (1.0 + ve0 / C)
     snr = (flux * mask).sum() / max((error * mask).sum(), 1e-10)
@@ -396,7 +384,7 @@ def run_mode2(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
         es = error / np.abs(flux_L1 + 1e-30)
         for k in range(ebv_sl_n):
             tmp_ebv = ebv_m1 + (k - (ebv_sl_n - 1) / 2.0) * 0.02
-            curve_g = 10.0 ** (0.4 * klam_c[g] * (-tmp_ebv))
+            curve_g = 10.0 ** (-0.4 * klam_c[g] * tmp_ebv)  # attenuate model
             sLe_d = t_sLe_g * curve_g[:, np.newaxis] / err_col_g
             wei_k = np.linalg.lstsq(sLe_d, flux_g, rcond=None)[0]
             s_m = np.dot(wei_k, t_s)
@@ -510,13 +498,13 @@ def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
     m1_intrinsic = np.dot(prep["temp_pca"], coeffs)
     m1_intrinsic = gauss_convolve(m1_intrinsic, pv["vd"] / velscale,
                                   (pv["ve"] + prep["vsys"]) / velscale)
-    m1_dust = calz_unred(prep["wave"], -pv["ebv"])
+    m1_dust = calz_attenuation(prep["wave"], pv["ebv"])
     out["mode1_dust"] = m1_dust
     out["mode1_model"] = m1_intrinsic * m1_dust * prep["norm_f5500"]
     out["mode1_residual"] = prep["flux_raw"] - out["mode1_model"]
 
     if mode in ("sl", "both"):
-        m2 = run_mode2(prep["flux"], prep["error"], prep["mask"].copy(),
+        m2 = run_mode2(prep["flux"], prep["error"], prep["mask"],
                        prep["temp_pca"], prep["wave"], prep["vsys"],
                        velscale, out["ve"][0], out["vd"][0], res1,
                        pca_full, prep["it1"], wave_temp)
@@ -707,7 +695,8 @@ class SpecFit:
         wave, flux, error : ndarray
             Observed spectrum arrays (observed frame).
         mask : ndarray, optional
-            0/1 mask (0 = good pixel, as in load_test_spectrum output).
+            Pixel mask with the library-wide convention 1/True = good pixel
+            (same as load_test_spectrum output and io MASK HDUs).
         z_sys : float
             Systemic redshift.
         mode : str
@@ -727,15 +716,10 @@ class SpecFit:
         """
         import numpy as np
         import astropy.io.fits as astro_fits
-        import pickle
 
-        global FIT_NEIG
-        old_neig = FIT_NEIG
-        if neig is not None:
-            FIT_NEIG = neig
+        n_comp = FIT_NEIG if neig is None else int(neig)
 
         # Load from FITS if provided
-        mask_from_fits = False
         if observed_fits is not None:
             with astro_fits.open(observed_fits) as h:
                 wave = h["WAVE"].data
@@ -743,20 +727,15 @@ class SpecFit:
                 error = h["ERROR"].data
                 if "MASK" in h:
                     mask = h["MASK"].data
-                    mask_from_fits = True
                 if "REDSHIFT" in h[0].header:
                     z_sys = h[0].header["REDSHIFT"]
 
         if wave is None or flux is None or error is None or z_sys is None:
             raise ValueError("wave, flux, error, z_sys are required")
 
-        # Build data dict compatible with existing preprocess_spectrum
-        # (which expects 0 = good).  MASK HDUs written by write_observed_fits
-        # use the opposite 1 = good convention -> convert.
+        # Library-wide mask convention: 1 = good pixel.
         if mask is None:
-            mask = np.zeros_like(flux, dtype=float)
-        elif mask_from_fits:
-            mask = (np.asarray(mask) == 0).astype(float)
+            mask = np.ones_like(flux, dtype=float)
         else:
             mask = np.asarray(mask, dtype=float)
 
@@ -770,23 +749,13 @@ class SpecFit:
             "sigma_dap": 100.0,
         }
 
-        # Override emission mask if provided
-        global _EM_LINES
-        old_em = list(_EM_LINES)
-        if emission_mask is not None:
-            _EM_LINES[:] = emission_mask
-
-        try:
-            # Run fitting (translate mode names)
-            _mode_map = {"mode1": "m1", "mode2": "sl", "both": "both",
-                         "m1": "m1", "sl": "sl"}
-            fit_mode = _mode_map.get(mode, mode)
-            pca_use = self._pca[:FIT_NEIG, :]
-            prep = preprocess_spectrum(data, self._wave_temp, pca_use)
-            fit = fit_spectrum(prep, pca_use, self._wave_temp, mode=fit_mode)
-        finally:
-            # Restore globals even if the fit raises
-            _EM_LINES[:] = old_em
-            FIT_NEIG = old_neig
+        # Run fitting (translate mode names)
+        _mode_map = {"mode1": "m1", "mode2": "sl", "both": "both",
+                     "m1": "m1", "sl": "sl"}
+        fit_mode = _mode_map.get(mode, mode)
+        pca_use = self._pca[:n_comp, :]
+        prep = preprocess_spectrum(data, self._wave_temp, pca_use,
+                                   emission_lines=emission_mask)
+        fit = fit_spectrum(prep, pca_use, self._wave_temp, mode=fit_mode)
 
         return SpecFitResult(fit, prep)

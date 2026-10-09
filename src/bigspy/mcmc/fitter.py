@@ -46,9 +46,17 @@ class MCMCResult:
 
     @property
     def bestfit(self):
-        """Best-fit (maximum-likelihood) parameter dict."""
+        """Best-fit (maximum-likelihood) parameter dict.
+
+        Includes parameters held fixed via ``FixedPrior`` (filled with
+        their fixed values), so the dict always covers the full parameter
+        set needed to rebuild a model spectrum.  ``posterior`` still
+        contains only the sampled (active) parameters.
+        """
         point = self._sampler.get_bestfit()
-        return dict(zip(self._sampler.param_names, point))
+        best = dict(zip(self._sampler.param_names, point))
+        best.update(self._sampler.fixed_params)
+        return best
 
     @property
     def posterior(self):
@@ -120,8 +128,11 @@ class MCMCResult:
         import corner
         import matplotlib.pyplot as plt
         samples = self.posterior
-        best = list(self.bestfit.values())
-        raw_labels = list(self.bestfit.keys())
+        # Truths/labels must align with the posterior columns (active
+        # parameters only); fixed params are not plotted.
+        raw_labels = list(self._sampler.param_names)
+        best_dict = self.bestfit
+        best = [best_dict[k] for k in raw_labels]
         _label_map = {
             "logZsun": r"$\log(Z/Z_\odot)$",
             "t0":      r"$t_0\ \mathrm{(Gyr)}$",
@@ -245,8 +256,11 @@ class MCMCResult:
             )
 
         best = self.bestfit
+        # Full SFH parameter set (active + fixed) — ``bestfit`` covers both.
         best_sfr = self._sampler.sfh_class(
-            **{name: best[name] for name in _sfh_param_idx}).evaluate(model.ssp.time)
+            **{name: best[name]
+               for name in self._sampler.sfh_class.param_names}
+        ).evaluate(model.ssp.time)
 
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.fill_between(cosmic_time, sfr_lo, sfr_hi, color='b', alpha=0.2,

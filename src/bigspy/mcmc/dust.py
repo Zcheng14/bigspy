@@ -1,51 +1,16 @@
 """
 Dust attenuation — Calzetti+2000 curve + polynomial mode.
 
-Class DustAttenuation merges two implementations:
-  - MCMC_fit.py: cleaner _compute static method, mode parameter, classmethods
-  - fit_spec.py: standalone calz_unred function
-
-Standalone calz_unred uses the same logic as DustAttenuation._compute
-in calzetti mode.  Positive ebv → deredden (brighten).
+The Calzetti law itself lives in :mod:`bigspy.utils` (``calz_klam`` /
+``calz_attenuation`` / ``calz_deredden``); this module provides the
+:class:`DustAttenuation` container that bundles a precomputed curve with
+a wavelength grid.  All curves here are attenuation factors meant to
+multiply MODEL flux (positive ebv dims).
 """
 import numpy as np
 
 from ..constants import C_LIGHT  # noqa: F401
-
-
-def calz_unred(wave, ebv):
-    """
-    Calzetti+2000 attenuation curve A(lamba).
-
-    Returns multiplicative correction factor 10^(-0.4 * k_lambda * ebv)
-    for dereddening (positive ebv = deredden).
-
-    Parameters
-    ----------
-    wave : array_like
-        Wavelength grid in Angstrom.
-    ebv : float
-        E(B-V) colour excess.
-
-    Returns
-    -------
-    ndarray
-        Correction factor per wavelength pixel.
-    """
-    wave = np.asarray(wave, dtype=float)
-    x = 10000.0 / wave
-    k = np.zeros_like(x)
-    Rv = 4.05
-
-    # >= 6300 A
-    k[wave >= 6300] = 2.659 * (-1.857 + 1.040 * x[wave >= 6300]) + Rv
-
-    # < 6300 A
-    k[wave < 6300] = (
-        2.659 * np.polyval([0.011, -0.198, 1.509, -2.156], x[wave < 6300]) + Rv
-    )
-
-    return 10.0 ** (-0.4 * k * ebv)
+from ..utils import calz_klam
 
 
 class DustAttenuation:
@@ -78,15 +43,7 @@ class DustAttenuation:
         if mode == "poly":
             A = p1 * (x - xv) + p2 * (x ** 2 - xv ** 2)
         elif mode == "calzetti":
-            k = np.zeros_like(x)
-            Rv = 4.05
-            k[wave >= 6300] = 2.659 * (-1.857 + 1.040 * x[wave >= 6300]) + Rv
-            k[wave < 6300] = (
-                2.659
-                * np.polyval([0.011, -0.198, 1.509, -2.156], x[wave < 6300])
-                + Rv
-            )
-            A = k * ebv
+            A = calz_klam(wave) * ebv
         else:
             raise ValueError(f"Unknown dust mode: {mode}")
 

@@ -11,11 +11,12 @@ import _synth
 from bigspy import SpecFit, SpecFitResult
 from bigspy.io import read_specfit_fits, write_observed_fits
 from bigspy.specfit import (
-    C, DLOGW, calz_unred, calz_klam, ccm_unred, gauss_convolve,
+    C, DLOGW, ccm_unred, gauss_convolve,
     load_pca_templates, load_test_spectrum, preprocess_spectrum,
     fit_spectrum, run_mode2, mean_filter, _A_lambda_fcn,
 )
-from bigspy.utils import air_to_vacuum_wave
+from bigspy.utils import (air_to_vacuum_wave, calz_klam, calz_attenuation,
+                          calz_deredden)
 from bigspy.mcmc.kinematics import gauss_convolve as mcmc_gauss_convolve
 
 
@@ -28,12 +29,18 @@ class TestUtilityFunctions:
         w = np.array([4000.0, 5500.0, 7000.0])
         assert np.all(air_to_vacuum_wave(w) > w)
 
-    def test_calz_unred_identity(self):
+    def test_calz_identity_at_zero_ebv(self):
         w = np.linspace(1000, 8000, 100)
-        assert np.allclose(calz_unred(w, 0.0), 1.0)
+        assert np.allclose(calz_deredden(w, 0.0), 1.0)
+        assert np.allclose(calz_attenuation(w, 0.0), 1.0)
 
-    def test_calz_unred_ebv_positive(self):
-        assert np.all(calz_unred(np.linspace(4000, 7000, 50), 0.1) > 1.0)
+    def test_calz_sign_conventions(self):
+        w = np.linspace(4000, 7000, 50)
+        # deredden brightens the data; attenuation dims the model
+        assert np.all(calz_deredden(w, 0.1) > 1.0)
+        assert np.all(calz_attenuation(w, 0.1) < 1.0)
+        np.testing.assert_allclose(
+            calz_deredden(w, 0.1) * calz_attenuation(w, 0.1), 1.0, rtol=1e-12)
 
     def test_gauss_convolve_noop(self):
         y = np.array([1.0, 2.0, 3.0])
@@ -195,11 +202,11 @@ class TestCalzKlam:
         klam[w2] = 2.659 * p2(x[w2]) + Rv
         return klam
 
-    def test_klam_reproduces_calz_unred(self):
+    def test_klam_reproduces_calz_deredden(self):
         w = np.linspace(900, 25000, 4001)
         for ebv in (0.0, 0.1, -0.2):
             np.testing.assert_array_equal(
-                10.0 ** (0.4 * self._klam_ref(w) * ebv), calz_unred(w, ebv))
+                10.0 ** (0.4 * self._klam_ref(w) * ebv), calz_deredden(w, ebv))
 
     def test_klam_branch_edges(self):
         k = self._klam_ref
@@ -296,12 +303,13 @@ class TestPreprocessSynthetic:
         prep = synth_prep[0]
         assert prep["wave"][0] >= 3600 and prep["wave"][-1] <= 7400
 
-    def test_mask_convention_zero_is_good(self, synth_pca_file):
+    def test_all_bad_mask_raises_clear_error(self, synth_pca_file):
         pca, wave_temp, _ = load_pca_templates(synth_pca_file)
         data, _ = _synth.make_synthetic_obs()
         data_bad = dict(data)
-        data_bad["mask_obs"] = np.ones(len(data["wave_obs"]))
-        with pytest.raises(IndexError):
+        # 1 = good convention: an all-zero mask leaves no usable pixels.
+        data_bad["mask_obs"] = np.zeros(len(data["wave_obs"]))
+        with pytest.raises(ValueError, match="usable pixels"):
             preprocess_spectrum(data_bad, wave_temp, pca)
 
 
@@ -372,6 +380,15 @@ class TestRunMode2Synthetic:
         np.testing.assert_array_equal(m2a["slr_flux"], m2b["slr_flux"])
         np.testing.assert_array_equal(m2a["dust_wave"], m2b["dust_wave"])
         np.testing.assert_array_equal(m2a["dust_A"], m2b["dust_A"])
+
+    def test_does_not_mutate_input_mask(self, synth_prep, synth_fit):
+        prep, pca, wave_temp, velscale, data = synth_prep
+        mask = prep["mask"].copy()
+        before = mask.copy()
+        run_mode2(prep["flux"], prep["error"], mask, prep["temp_pca"],
+                  prep["wave"], prep["vsys"], velscale, 0.0, 0.0,
+                  synth_fit["mode1_result"], pca, prep["it1"], wave_temp)
+        np.testing.assert_array_equal(mask, before)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -537,3 +554,40 @@ class TestSpecFitFitKwargs:
             mask=data["mask_obs"], z_sys=data["z"], mode="mode1", neig=neig)
         assert isinstance(res, SpecFitResult)
         assert np.isfinite(res.ve[0]) and np.isfinite(res.vd[0])
+
+    def test_neig_consecutive_calls_isolated(self, synth_pca_file):
+        """Interleaved fits with different neig must not leak state."""
+        data = self._obs()
+
+        def fit(neig):
+            return SpecFit(synth_pca_file).fit(
+                wave=data["wave_obs"], flux=data["flux_obs"],
+                error=data["error_obs"], mask=data["mask_obs"],
+                z_sys=data["z"], mode="mode1", neig=neig)
+
+        r5a = fit(5)
+        fit(15)
+        r5b = fit(5)
+        assert r5a.ve[0] == r5b.ve[0] and r5a.vd[0] == r5b.vd[0]
+
+    def test_emission_mask_not_sticky(self, synth_pca_file):
+        """A custom emission_mask must not leak into later fits.
+
+        A custom mask REPLACES the default line table, so the default
+        H-alpha window (6555-6575 A) stays unmasked in the custom run but
+        must be masked again in a subsequent default run.
+        """
+        data = self._obs()
+        res_custom = SpecFit(synth_pca_file).fit(
+            wave=data["wave_obs"], flux=data["flux_obs"],
+            error=data["error_obs"], mask=data["mask_obs"], z_sys=data["z"],
+            mode="mode1", emission_mask=[(5000, 5100)])
+        res_default = SpecFit(synth_pca_file).fit(
+            wave=data["wave_obs"], flux=data["flux_obs"],
+            error=data["error_obs"], mask=data["mask_obs"], z_sys=data["z"],
+            mode="mode1")
+        w = res_default.wave_prep
+        ha = (w >= 6555) & (w <= 6575)
+        assert ha.sum() > 0
+        assert np.all(res_custom.mask_prep[ha] == 1)
+        assert np.all(res_default.mask_prep[ha] == 0)

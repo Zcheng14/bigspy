@@ -11,13 +11,13 @@ from bigspy.mcmc.priors import (UniformPrior, LogUniformPrior, GaussianPrior,
 from bigspy.mcmc.sfh import (SFHBase, DelayedExponentialSFH, DoublePowerLawSFH)
 from bigspy.mcmc.ssp import SSPLibrary
 from bigspy.mcmc.csp import CSPBuilder
-from bigspy.mcmc.dust import DustAttenuation, calz_unred
+from bigspy.mcmc.dust import DustAttenuation
 from bigspy.mcmc.kinematics import (
     gauss_convolve, gauss_convolve_batch, VelocityBroadening,
     _build_convolution_matrix,
 )
 from bigspy.mcmc import kinematics as _kin_mod
-from bigspy.specfit import calz_unred as specfit_calz_unred
+from bigspy.utils import calz_attenuation, calz_deredden
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -219,9 +219,9 @@ class TestCSPBuilder:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestDust:
-    def test_calz_unred_noop(self):
+    def test_calz_attenuation_noop(self):
         w = np.linspace(4000, 7000, 50)
-        np.testing.assert_allclose(calz_unred(w, 0.0), 1.0)
+        np.testing.assert_allclose(calz_attenuation(w, 0.0), 1.0)
 
     def test_dust_from_mode2(self):
         w = np.linspace(3600, 7400, 100)
@@ -240,7 +240,7 @@ class TestDustAttenuationCalzetti:
                      2.659 * (-1.857 + 1.040 * x) + 4.05,
                      2.659 * (0.011 * x ** 3 - 0.198 * x ** 2 + 1.509 * x - 2.156) + 4.05)
         np.testing.assert_allclose(curve, 10.0 ** (-0.4 * k * ebv), rtol=1e-12)
-        np.testing.assert_allclose(curve, calz_unred(w, ebv), rtol=1e-12)
+        np.testing.assert_allclose(curve, calz_attenuation(w, ebv), rtol=1e-12)
 
     def test_unknown_mode_raises(self):
         with pytest.raises(ValueError, match="Unknown dust mode"):
@@ -253,20 +253,21 @@ class TestDustAttenuationCalzetti:
         d = DustAttenuation.from_calzetti(w1, ebv)
         flux = np.full(len(w2), 2.0)
         np.testing.assert_allclose(d.apply(flux, wave=w2),
-                                   flux * calz_unred(w2, ebv), rtol=1e-12)
+                                   flux * calz_attenuation(w2, ebv), rtol=1e-12)
         f1 = np.full(len(w1), 2.0)
-        np.testing.assert_allclose(d.apply(f1), f1 * calz_unred(w1, ebv), rtol=1e-12)
+        np.testing.assert_allclose(d.apply(f1), f1 * calz_attenuation(w1, ebv),
+                                   rtol=1e-12)
 
-    def test_inverse_relation_with_specfit(self):
+    def test_deredden_attenuation_inverse(self):
         w = np.linspace(4000, 8000, 300)
         e = 0.15
         np.testing.assert_allclose(
-            specfit_calz_unred(w, e) * calz_unred(w, e), 1.0, rtol=1e-12)
+            calz_deredden(w, e) * calz_attenuation(w, e), 1.0, rtol=1e-12)
 
-    def test_calz_unred_continuity_at_6300(self):
+    def test_calz_attenuation_continuity_at_6300(self):
         for ebv in (0.0, 0.1):
-            lo = calz_unred(np.array([6299.5]), ebv)[0]
-            hi = calz_unred(np.array([6300.5]), ebv)[0]
+            lo = calz_attenuation(np.array([6299.5]), ebv)[0]
+            hi = calz_attenuation(np.array([6300.5]), ebv)[0]
             assert abs(lo / hi - 1.0) < 0.003
 
 

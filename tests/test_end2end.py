@@ -68,5 +68,7 @@ class TestEndToEnd:
                                  "tau": LogUniformPrior(0.1, 13.0),
                                  "alpha": LogUniformPrior(0.1, 1000.0),
                                  "beta": FixedPrior(0.2)})
-            assert "beta" not in res.bestfit
+            # Fixed params are reported in bestfit, not in the posterior.
+            assert res.bestfit["beta"] == 0.2
             assert res.posterior.shape[1] == 3   # tau, alpha, logZsun
+            assert len(res.bestfit_model()) == len(res.model.obs_wave)
