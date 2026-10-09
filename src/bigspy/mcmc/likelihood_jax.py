@@ -1,19 +1,17 @@
-"""JAX likelihood for bigspy MCMC.
+"""JAX likelihood for the NSS sampler.
 
 Provides the JIT-compiled batch chi-squared core
-(:func:`compute_chi2_batch_jax`) and the :class:`JAXLikelihood` wrapper used by
-the NSS sampler.  Sampling is JAX-only; there is no NumPy chi-squared
-implementation in the library.
+(:func:`compute_chi2_batch_jax`) and the :class:`JAXLikelihood` wrapper.
+The likelihood maps physical parameters (log metallicity + SFH
+parameters) to a log-likelihood; SFH weights are evaluated in JAX via
+``SFHClass.evaluate_batch_jax`` so the whole computation can be traced
+and JIT-compiled by blackjax.
 
-The likelihood maps physical parameters (log metallicity + SFH parameters) to a
-log-likelihood.  SFH weights are evaluated in JAX via
-``SFHClass.evaluate_batch_jax`` so the entire computation can be traced by
-blackjax.
-
-The interpolation from the SSP grid to the observed grid uses a plan of gather
-indices / weights precomputed once in ``__init__`` (both grids are fixed),
-matching the NumPy ``_LinearInterpPlan`` boundary behaviour (strictly
-out-of-range -> 0).
+Model pipeline: SFH-weighted sum over the SSP cube -> metallicity
+interpolation -> velocity broadening -> 5500 A normalization -> dust ->
+linear interpolation onto the observed grid.  The interpolation uses a
+gather/lerp plan precomputed once in ``__init__`` (both grids are fixed);
+targets strictly outside the SSP range are set to 0.
 """
 
 import numpy as np
@@ -40,11 +38,11 @@ def _build_conv_kernel(sigma_pix):
 
 
 def _build_interp_plan(x_src, x_new):
-    """Pre-compute the linear-interpolation gather plan for fixed grids.
+    """Pre-compute a linear-interpolation gather plan for fixed grids.
 
-    Reproduces the NumPy ``_LinearInterpPlan`` for a fixed ``(x_src, x_new)``
-    pair: same index layout, same formula, and strictly out-of-range targets
-    are zeroed.
+    For each target point, store the lower source index and the quantities
+    needed for the lerp; targets strictly outside the source range are
+    flagged and zeroed.
 
     Returns
     -------

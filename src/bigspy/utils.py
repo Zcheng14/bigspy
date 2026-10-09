@@ -32,11 +32,9 @@ def median_in_window(wave, flux, mask, window):
 
 
 # ── Calzetti+2000 dust law ───────────────────────────────────────
-# Canonical home of the Calzetti law.  Two explicitly named wrappers
-# replace the former pair of sign-flipped ``calz_unred`` functions:
-#
-# * ``calz_attenuation`` -- multiplies MODEL flux (positive ebv dims).
-# * ``calz_deredden``    -- multiplies OBSERVED flux (positive ebv brightens).
+# ``calz_attenuation`` multiplies MODEL flux (positive ebv dims);
+# ``calz_deredden`` multiplies OBSERVED flux (positive ebv brightens).
+# The two are exact reciprocals.
 
 def calz_klam(wave):
     """Calzetti+2000 k(lambda) — the wavelength-dependent part of the law.
@@ -63,18 +61,18 @@ def calz_klam(wave):
 
 
 def calz_attenuation(wave, ebv):
-    """Dust attenuation factor for MODEL spectra: ``10**(-0.4 * k * ebv)``.
+    """Dust attenuation factor for model spectra, ``10**(-0.4 * k * ebv)``.
 
-    Positive ``ebv`` dims (reddens) the model; multiply model flux by this.
+    Multiply model flux by this factor; positive ``ebv`` dims (reddens).
     """
     return 10.0 ** (-0.4 * calz_klam(wave) * ebv)
 
 
 def calz_deredden(wave, ebv):
-    """De-reddening factor for OBSERVED spectra: ``10**(+0.4 * k * ebv)``.
+    """De-reddening factor for observed spectra, ``10**(+0.4 * k * ebv)``.
 
-    Positive ``ebv`` brightens (de-reddens) the data; multiply observed
-    flux by this.  ``calz_deredden(w, e) == 1 / calz_attenuation(w, e)``.
+    Multiply observed flux by this factor; positive ``ebv`` brightens
+    (de-reddens).  Exact reciprocal of :func:`calz_attenuation`.
     """
     return 10.0 ** (0.4 * calz_klam(wave) * ebv)
 

@@ -1,12 +1,11 @@
-"""Emission line mask definitions for spectral fitting.
+"""Emission-line mask definitions for spectral fitting.
 
-Provides a detailed emission line list (~50 lines) from the original BIGS
-SpecFit.py Emlines module.
+``EMISSION_LINES`` lists ~50 rest-frame wavelength windows around common
+emission lines; pixels inside these windows are excluded from the fit.
 """
 
-# ── Detailed emission line list (Å) ──────────────────────────────────
-# From BIGS SpecFit.py / Emlines: individual line centers ± FWHM equivalent
-# Format: label -> [lo, hi] in rest-frame Angstrom
+# ── Emission line list (rest-frame Angstrom) ────────────────────────
+# Format: label -> [lo, hi]
 EMISSION_LINES = {
     # Near-UV / Blue
     "l3710": [3710, 3737],
@@ -104,7 +103,7 @@ def build_emission_mask(wave, regions=None):
 
 
 def mask_emlines_detailed(wave, mask_in, mask_add=None):
-    """Full detailed emission line masking (mimics original BIGS SpecFit logic).
+    """Mask emission-line regions on a wavelength grid.
 
     Parameters
     ----------
@@ -113,12 +112,13 @@ def mask_emlines_detailed(wave, mask_in, mask_add=None):
     mask_in : ndarray of bool
         Input mask (True = good pixel).
     mask_add : dict, optional
-        Additional mask regions e.g. {'my_line': [w1, w2]}.
+        Extra regions to mask on top of ``EMISSION_LINES``,
+        e.g. ``{'my_line': [w1, w2]}``.
 
     Returns
     -------
     mask_out : ndarray of bool
-        Updated mask with emission lines masked.
+        Updated mask with emission lines set to False.
     lines : dict
         The emission line table used.
     """

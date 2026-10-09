@@ -1,9 +1,8 @@
 """NumPy model container for building model spectra (plots / saving).
 
-This is the NumPy counterpart of :mod:`bigspy.mcmc.likelihood_jax`: it holds the
-observed data and the CSP / broadening / dust pipeline, and builds a model
-spectrum for a given set of parameters.  It contains no chi-squared; the
-likelihood lives in ``likelihood_jax`` and is JAX-only.
+Holds the observed data and the CSP / broadening / dust pipeline — the
+NumPy counterpart of :mod:`bigspy.mcmc.likelihood_jax` — and builds a
+model spectrum for a given set of parameters.  Contains no chi-squared.
 """
 
 import numpy as np

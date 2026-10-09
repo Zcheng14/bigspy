@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-SpecFit: PCA-based spectral fitting for stellar kinematics and dust attenuation.
+SpecFit: PCA-based fitting of stellar kinematics and dust attenuation.
 
-Uses PCA templates (from compute_pca output) to fit observed spectra with:
-  model = [Sigma a_i * PC_i] (*) gauss(vd, ve+vsys) * dust_curve(ebv)
+An observed spectrum is fit with a linear combination of PCA templates,
+broadened by a Gaussian and multiplied by a dust curve:
+
+    model = [sum_i a_i * PC_i] (*) gauss(vd, ve + vsys) * dust
 
 Two fitting modes:
-  Mode 1 (Calzetti): Direct fit with Calzetti+2000 attenuation curve.
-  Mode 2 (S/L): Separate smooth/line components with free-form dust curve.
+  Mode 1 (Calzetti) -- Calzetti+2000 attenuation curve, parameter ebv.
+  Mode 2 (S/L)      -- smooth/line separation with a free-form dust
+                       curve, quadratic in 1/lambda (parameters p1, p2).
 
 No emission-line fitting, no stellar-population decomposition.
 """
@@ -23,7 +26,7 @@ import matplotlib
 from .constants import (C_LIGHT as C, DLOGW, DLOGW_VEL, NEIG, FIT_NEIG,
                         WAVE_NORM)
 
-# ── Calzetti dust law (canonical home: bigspy.utils) ───────────
+# ── Calzetti dust law ──────────────────────────────────────────
 from .utils import calz_klam, calz_attenuation
 
 # ── Emission-line masks for preprocessing ──────────────────────
@@ -44,15 +47,20 @@ def _gauss_kernel(sigma, x0=0.0):
 
 
 def gauss_convolve(y, sigma, x0=0.0):
-    """Convolve spectrum with a Gaussian kernel.
-    sigma, x0 are in pixel units."""
+    """Convolve a spectrum with a Gaussian kernel (sigma, x0 in pixels).
+
+    sigma <= 0 is a no-op."""
     if sigma <= 0:
         return y
     return np.convolve(y, _gauss_kernel(sigma, x0), "same")
 
 
 def ccm_unred(wave, ebv):
-    """Cardelli+Clayton+Mathis 1989 (O'Donnell 1994) MW extinction."""
+    """MW extinction correction (Cardelli+89, O'Donnell 1994, Rv=3.1).
+
+    Returns 10**(0.4 * A(lambda)); multiply observed flux by this factor
+    to correct for Galactic foreground extinction.
+    """
     wave = np.asarray(wave, float)
     x = 10000.0 / wave
     a = np.zeros_like(x)
@@ -95,7 +103,7 @@ def load_pca_templates(pca_file, n_comp=None):
     pca_file : str
         Path to the PCA FITS file (must contain 'pca_log' and 'wave_log' HDUs).
     n_comp : int, optional
-        Number of PCA components to keep. Defaults to the current FIT_NEIG.
+        Number of PCA components to keep (default: FIT_NEIG).
 
     Returns
     -------
@@ -126,8 +134,8 @@ def load_test_spectrum(path):
     -------
     dict with keys: z, ebv_mw, wave_obs, flux_obs, mask_obs,
                     error_obs, sigma_dap.
-        ``mask_obs`` uses the library-wide convention 1 = good pixel
-        (converted here from the raw DAP-style 0 = good bitmask).
+        ``mask_obs`` follows the 1 = good convention (the raw 0 = good
+        bitmask is converted here).
     """
     with open(path, "rb") as f:
         z_gal, ebv_mw, w_obs, s_obs, m_obs, e_obs, sig_dap, _ = \
@@ -161,8 +169,7 @@ def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400),
     Parameters
     ----------
     data : dict
-        Output of load_test_spectrum().  ``mask_obs`` uses the
-        library-wide convention 1 = good pixel.
+        Output of load_test_spectrum(); ``mask_obs`` is 1 = good pixel.
     wave_temp : ndarray
         Template wavelength grid.
     pca_all : ndarray
@@ -224,17 +231,13 @@ def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400),
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Core fitting functions
-# ═══════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════
 #  Mode 1: Calzetti
 # ═══════════════════════════════════════════════════════════════
 def _m1_residual(params, flux, error, mask, temp_pca, wave_fit,
                  vsys, velscale, klam=None):
-    """Residual function for Mode 1 (Calzetti-only fit).
+    """Residual function for the Mode 1 (Calzetti) fit.
 
-    klam: precomputed calz_klam(wave_fit) for this fixed wave grid (hoisted
-    out of the lmfit iteration loop by run_mode1). None -> compute here.
+    klam : precomputed calz_klam(wave_fit); computed here when None.
     """
     pv = params.valuesdict()
     ncomp = temp_pca.shape[1]
@@ -260,7 +263,7 @@ def run_mode1(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
     params.add("vd", value=sigma_dap, min=0, max=500)
     params.add("ebv", value=0.1, min=0.0, max=0.5)
     params["vd"].vary = False
-    klam = calz_klam(wave_fit)   # fixed wave grid: compute k(lambda) once
+    klam = calz_klam(wave_fit)   # fixed wave grid: k(lambda) computed once
     r = lmfit.Minimizer(_m1_residual, params,
                         fcn_args=(flux, error, mask, temp_pca, wave_fit,
                                   vsys, velscale, klam)) \
@@ -277,7 +280,15 @@ def run_mode1(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
 #  Mode 2: S/L (Smooth / Line) method
 # ═══════════════════════════════════════════════════════════════
 def mean_filter(flux, wave, wave_win, mask=None):
-    """Running-mean filter. Returns DETAILED component (flux - smoothed)."""
+    """Running-mean filter on a 1-A grid; returns flux - smoothed.
+
+    The spectrum is interpolated onto an integer-Angstrom grid and
+    smoothed with a running mean of width ``wave_win`` (A); the returned
+    "detail" component is interpolated back onto ``wave``.  With ``mask``
+    (1 = good), only good pixels enter the mean; windows without good
+    pixels produce a zero mean.  The first/last ``wave_win``/2 pixels are
+    never updated (detail = 0 there).
+    """
     n_wave = len(wave)
     wmin = int(np.ceil(wave[0]))
     wmax = int(np.floor(wave[-1]))
@@ -294,9 +305,9 @@ def mean_filter(flux, wave, wave_win, mask=None):
     k = int(wave_win / 2)
     n = len(flux_tmp)
     unres = flux_tmp.copy()
-    # Vectorized sliding-window means (identical semantics to the former
-    # per-pixel loop, including the eff==0 -> 1 and mean==0 -> flux_tmp[i]
-    # fixups and the untouched first/last k pixels).
+    # Vectorized sliding-window means. eff == 0 (no good pixels) -> 1,
+    # giving a zero smoothed value; in the unmasked branch a zero mean
+    # falls back to the pixel value.
     if n > 2 * k:
         win_f = sliding_window_view(flux_tmp, 2 * k + 1)
         if mask is not None:
@@ -348,7 +359,7 @@ def run_mode2(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
     slr2 = flux_s1 / flux_L1
     slr_obs = np.where(slr1 > slr2, slr1, slr2)
 
-    # Template S/L (kernel fixed for the whole loop: build it once)
+    # Template S/L (the broadening kernel is fixed; build it once)
     t_s = np.zeros((ncomp, npx))
     t_L = np.zeros((ncomp, npx))
     t_sLe = np.zeros((npx, ncomp))
@@ -369,8 +380,8 @@ def run_mode2(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
     if mask.sum() == 0:
         mask[0] = 1.0
 
-    # Iterative ebv scan (loop invariants hoisted: mask/g, flux/error on g,
-    # k(lambda) on wave_c, es — none change between iterations)
+    # Scan ebv on a grid around the Mode-1 value; everything that does
+    # not depend on ebv is precomputed before the loop.
     ebv_m1 = result_m1.params["ebv"].value
     best_redchi = np.inf
     best_wei = None
@@ -415,7 +426,8 @@ def run_mode2(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
         nf = np.median(flux[mask == 1])
     slr_flux_norm = slr_flux * (nf / nm)
 
-    # Normalize + Fr (fit dust curve to flux ratio)
+    # Fit the dust curve to the model/observed flux ratio Fr, with both
+    # sides normalized at 5500 A.
     m5500 = (wave_c > 5450) & (wave_c < 5550)
     mm = m5500 & (mask == 1)
     ok = np.zeros_like(mask, dtype=bool)   # safe defaults when the window
@@ -464,8 +476,8 @@ def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
     ----------
     prep : dict
         Output of preprocess_spectrum().
-    pca_full : ndarray (NEIG, n_wave)
-        Full PCA component array (all components, full wavelength).
+    pca_full : ndarray (n_comp, n_wave)
+        PCA components on the full template wavelength grid.
     wave_temp : ndarray
         Template wavelength grid.
     mode : str
@@ -526,7 +538,11 @@ def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
 #  User-facing API
 # ═══════════════════════════════════════════════════════════════
 class SpecFitResult:
-    """Container for SpecFit results."""
+    """SpecFit results: kinematics, dust, and the preprocessed spectrum.
+
+    The ``*_prep`` properties expose the rest-frame, MW-corrected,
+    trimmed spectrum that the MCMC stage consumes.
+    """
     def __init__(self, fit_dict, prep_dict):
         self._fit = fit_dict
         self._prep = prep_dict
@@ -538,7 +554,7 @@ class SpecFitResult:
         self.p2 = m2.get("p2", 0.0)
         self.chi2 = fit_dict.get("chi2r_m1", 0.0)
         self._bestfit = fit_dict.get("mode1_model")
-        # Dust curve as callable
+        # Dust curve on the preprocessed wave grid (mode-2 preferred).
         self._dust_wave = prep_dict["wave"]
         m2_dust = fit_dict.get("mode2_dust")
         m1_dust = fit_dict.get("mode1_dust")
@@ -555,7 +571,11 @@ class SpecFitResult:
 
     @property
     def dust_curve(self):
-        """Return dust attenuation as callable function of wavelength."""
+        """Dust attenuation as a callable function of wavelength.
+
+        Linear interpolation of the fitted curve; 1.0 outside the grid
+        and when no dust curve was fitted.
+        """
         if self._dust_curve is None:
             return lambda w: np.ones_like(w)
         from scipy.interpolate import interp1d
@@ -583,6 +603,7 @@ class SpecFitResult:
         return self._prep.get("mask", np.ones_like(self._prep["wave"]))
 
     def save(self, path, overwrite=True):
+        """Save to FITS: WAVE/FLUX/ERROR/PARAMS (+ BESTFIT, DUST)."""
         from astropy.io import fits
         import os
         m2 = self._fit.get("mode2_result", {})
@@ -605,6 +626,7 @@ class SpecFitResult:
         hdul.writeto(path, overwrite=overwrite)
 
     def plot_fit(self, path):
+        """Plot the observed spectrum and the Mode-1 best fit."""
         import matplotlib
         matplotlib.use("Agg")
         matplotlib.rcParams.update({
@@ -632,6 +654,7 @@ class SpecFitResult:
         plt.close(fig)
 
     def plot_dust(self, path):
+        """Plot the S/L dust data points and the polynomial dust curve."""
         import matplotlib
         matplotlib.use("Agg")
         matplotlib.rcParams.update({
@@ -675,13 +698,12 @@ class SpecFit:
     Parameters
     ----------
     pca_fits : str
-        Path to PCA template FITS file (from compute_pca output).
+        Path to the PCA template FITS file (with pca_log/wave_log HDUs).
     """
 
     def __init__(self, pca_fits):
         self.pca_fits = pca_fits
-        # Keep all available components so fit(neig=...) can choose freely;
-        # the active number is sliced at fit time from FIT_NEIG.
+        # Load all available components; fit(neig=...) slices at fit time.
         self._pca, self._wave_temp, self._velscale = load_pca_templates(
             pca_fits, n_comp=NEIG)
 
@@ -695,8 +717,8 @@ class SpecFit:
         wave, flux, error : ndarray
             Observed spectrum arrays (observed frame).
         mask : ndarray, optional
-            Pixel mask with the library-wide convention 1/True = good pixel
-            (same as load_test_spectrum output and io MASK HDUs).
+            Pixel mask, 1/True = good (consistent with load_test_spectrum
+            output and the io MASK HDU).
         z_sys : float
             Systemic redshift.
         mode : str
@@ -733,7 +755,7 @@ class SpecFit:
         if wave is None or flux is None or error is None or z_sys is None:
             raise ValueError("wave, flux, error, z_sys are required")
 
-        # Library-wide mask convention: 1 = good pixel.
+        # Mask convention: 1 = good pixel.
         if mask is None:
             mask = np.ones_like(flux, dtype=float)
         else:
@@ -749,7 +771,7 @@ class SpecFit:
             "sigma_dap": 100.0,
         }
 
-        # Run fitting (translate mode names)
+        # Accept both long and short mode names.
         _mode_map = {"mode1": "m1", "mode2": "sl", "both": "both",
                      "m1": "m1", "sl": "sl"}
         fit_mode = _mode_map.get(mode, mode)

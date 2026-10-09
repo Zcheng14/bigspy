@@ -36,8 +36,7 @@ def _build_convolution_matrix(n_pix, sigma_pix, x0_pix=0.0):
 
     # Build convolution matrix using "same" mode
     # (matches np.convolve(y, kernel, "same"): output[j] = sum_i kernel[i]*y[j+offset-i])
-    # Vectorized index scatter: identical values to the former per-pixel
-    # double loop (each cell is written at most once).
+    # Vectorized index scatter; each cell is written at most once.
     K = np.zeros((n_pix, n_pix))
     jj = np.arange(n_pix)
     src = jj[None, :] + khalf - np.arange(len(kernel))[:, None]  # (n_k, n_pix)
@@ -52,8 +51,8 @@ def _build_convolution_matrix(n_pix, sigma_pix, x0_pix=0.0):
 def _conv_matrix_cached(n_pix, sigma_pix, x0_pix=0.0):
     """Cached convolution matrix (shared across callers, read-only).
 
-    During an MCMC run sigma_pix/x0_pix are fixed, so the matrix is built
-    once per run instead of once per likelihood batch.
+    sigma_pix/x0_pix are fixed during a sampling run, so the matrix is
+    built once per run instead of once per likelihood evaluation.
     """
     K = _build_convolution_matrix(n_pix, sigma_pix, x0_pix)
     K.flags.writeable = False  # shared — never mutate
@@ -127,7 +126,7 @@ class VelocityBroadening:
         Velocity spacing per pixel (km/s).
     """
     
-    DLOGW_VEL = DLOGW_VEL  # class attribute kept for backward compatibility
+    DLOGW_VEL = DLOGW_VEL  # default velocity scale (km/s per pixel)
 
     def __init__(self, vd, velscale=None):
         if velscale is None:

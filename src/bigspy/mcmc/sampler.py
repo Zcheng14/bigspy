@@ -1,8 +1,8 @@
 """NSS sampler -- blackjax Nested Slice Sampling backend.
 
-Replaces the former UltraNest sampler.  Sampling runs on the unit hypercube
-with ``blackjax.nss``; the prior is encoded entirely in the per-parameter
-transforms (:meth:`Prior.transform_jax`), so the log-prior is a constant and the
+Sampling runs on the unit hypercube with ``blackjax.nss``; the prior is
+encoded entirely in the per-parameter transforms
+(:meth:`Prior.transform_jax`), so the log-prior is a constant and the
 evidence is computed with respect to the physical prior.
 """
 

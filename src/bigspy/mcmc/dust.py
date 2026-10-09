@@ -35,7 +35,7 @@ class DustAttenuation:
 
     @staticmethod
     def _compute(wave, mode, ebv=None, p1=None, p2=None):
-        """Compute attenuation curve: factor that multiplies flux."""
+        """Compute the attenuation curve (factor multiplying model flux)."""
         wave = np.asarray(wave, float)
         x = 10000.0 / wave
         xv = 10000.0 / 5500.0

@@ -167,7 +167,7 @@ class TestMCMCFitter:
 
     def test_run_with_fixed_prior(self, synth_ssp_file):
         """Fixed SFH param: excluded from posterior, present in bestfit,
-        and model rebuilding (previously TypeError) works."""
+        and model rebuilding works with the full parameter set."""
         from bigspy import FixedPrior
         f = self._make(synth_ssp_file)
         res = f.run(n_live=20, num_delete=10, num_inner_steps=4,
