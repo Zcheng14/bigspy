@@ -1,95 +1,114 @@
-"""MCMC Fitter — high-level interface for Bayesian spectral fitting."""
+"""MCMC fitter -- high-level interface for Bayesian spectral fitting.
+
+Sampling is done with blackjax Nested Slice Sampling (``blackjax.nss``); see
+:mod:`bigspy.mcmc.sampler`.  The default model is the double power-law SFH.
+"""
 
 import os
 import numpy as np
 
 from .ssp import SSPLibrary
 from .dust import DustAttenuation
-from .likelihood import Likelihood
-from .sampler import UltraNestSampler
+from .model import ModelComponents
+from .likelihood_jax import JAXLikelihood
+from .sampler import (NSSampler, DEFAULT_N_LIVE, DEFAULT_NUM_DELETE,
+                      DEFAULT_NUM_INNER_STEPS)
+
+
+def _robust_ylim(arrays, mask, pct=(1, 99), pad=0.10):
+    """Robust y-axis limits from good-pixel values (percentiles + padding).
+
+    Keeps emission-line spikes / outliers from dominating the plot range.
+    """
+    vals = []
+    for a in arrays:
+        a = np.asarray(a, dtype=float)
+        good = np.asarray(mask, dtype=bool) & np.isfinite(a)
+        if good.any():
+            vals.append(a[good])
+    if not vals:
+        return None
+    v = np.concatenate(vals)
+    lo, hi = np.percentile(v, pct)
+    span = hi - lo
+    if not np.isfinite(span) or span <= 0:
+        span = max(abs(lo), 1e-6)
+    return lo - pad * span, hi + pad * span
 
 
 class MCMCResult:
-    """Container for MCMC fitting results."""
-    
-    def __init__(self, sampler, likelihood_np=None):
+    """Container for MCMC fitting results and plotting/saving helpers."""
+
+    def __init__(self, sampler, model):
         self._sampler = sampler
-        self._likelihood_np = likelihood_np  # NumPy Likelihood for plotting/saving
-        self.result = sampler.result  # Raw UltraNest result dict
+        self._model = model
+        self.result = sampler.result
 
     @property
-    def _like(self):
-        """NumPy Likelihood for plotting/saving (falls back to sampler's like)."""
-        if self._likelihood_np is not None:
-            return self._likelihood_np
-        return self._sampler.like
-    
-    @property
     def bestfit(self):
-        """Best-fit parameters dict."""
+        """Best-fit (maximum-likelihood) parameter dict."""
         point = self._sampler.get_bestfit()
-        names = self._sampler.param_names
-        return dict(zip(names, point))
-    
+        return dict(zip(self._sampler.param_names, point))
+
     @property
     def posterior(self):
-        """Posterior samples (N_samples, n_params)."""
+        """Posterior samples, shape (N_samples, n_params)."""
         return self._sampler.get_posterior()
-    
+
     @property
     def log_evidence(self):
         """Log evidence log(Z)."""
         return self.result.get("logz", np.nan)
-    
+
+    @property
+    def model(self):
+        """NumPy model container (observed data + CSP pipeline)."""
+        return self._model
+
+    def bestfit_model(self):
+        """Best-fit CSP interpolated to the observed wavelength grid."""
+        best = self.bestfit
+        sfh_cls = self._sampler.sfh_class
+        sfh = sfh_cls(**{k: v for k, v in best.items() if k != "logZsun"})
+        return self._model.build_model(best.get("logZsun", 0.0), sfh)
+
     def save_result(self, path):
-        """Save best-fit params + CSP spectrum to FITS.
-        
+        """Save best-fit parameters and CSP spectrum to FITS.
+
         HDU structure:
-            PRIMARY   — header info
-            BESTFIT   — parameter table (name, value)
-            WAVE      — observed wavelength grid (rest frame)
-            FLUX      — observed flux (preprocessed)
-            ERROR     — observed error (preprocessed)
-            MASK      — pixel mask (1=good)
-            CSP       — best-fit CSP spectrum (SSP grid)
-            CSP_OBS   — best-fit CSP interpolated to observed grid
+            PRIMARY   -- header with LOGEVID
+            BESTFIT   -- parameter table (name, value)
+            WAVE/FLUX/ERROR/MASK -- preprocessed observed data
+            CSP       -- best-fit CSP on the SSP grid
+            CSP_OBS   -- best-fit CSP on the observed grid
         """
         from astropy.io import fits
-        import numpy as np
-        
+
         best = self.bestfit
-        like = self._like
-        
-        # Build best-fit CSP
+        model = self._model
         logZ = best.get("logZsun", 0.0)
-        sfh_kw = {k: v for k, v in best.items() if k != "logZsun"}
         sfh_cls = self._sampler.sfh_class
-        sfh = sfh_cls(**sfh_kw, age_universe=13.8)
-        csp = like.builder.build(logZ, sfh)
-        csp = like.broadener.apply(csp)
-        n = like._med5500(like.ssp.wave, csp, np.ones_like(csp, dtype=bool), like._n_range)
-        csp = csp / n
-        csp = like.dust.apply(csp)
-        csp_obs = np.interp(like.obs_wave, like.ssp.wave, csp, left=0.0, right=0.0)
-        
-        # Parameter table
+        sfh = sfh_cls(**{k: v for k, v in best.items() if k != "logZsun"})
+        csp = model.build_csp(logZ, sfh)
+        csp_obs = model.build_model(logZ, sfh)
+
         cols = [fits.Column(name=n, format="D", array=[v]) for n, v in best.items()]
-        
+
         hdul = fits.HDUList([fits.PrimaryHDU()])
         hdul[0].header["LOGEVID"] = (float(self.log_evidence), "log(Z) evidence")
         hdul.append(fits.BinTableHDU.from_columns(cols, name="BESTFIT"))
-        hdul.append(fits.ImageHDU(like.obs_wave.astype(np.float64), name="WAVE"))
-        hdul.append(fits.ImageHDU(like.obs_flux.astype(np.float64), name="FLUX"))
-        hdul.append(fits.ImageHDU(like.obs_error.astype(np.float64), name="ERROR"))
-        hdul.append(fits.ImageHDU(like.obs_mask.astype(np.uint8), name="MASK"))
+        hdul.append(fits.ImageHDU(model.obs_wave.astype(np.float64), name="WAVE"))
+        hdul.append(fits.ImageHDU(model.obs_flux.astype(np.float64), name="FLUX"))
+        hdul.append(fits.ImageHDU(model.obs_error.astype(np.float64), name="ERROR"))
+        hdul.append(fits.ImageHDU(model.obs_mask.astype(np.uint8), name="MASK"))
         hdul.append(fits.ImageHDU(csp.astype(np.float64), name="CSP"))
         hdul.append(fits.ImageHDU(csp_obs.astype(np.float64), name="CSP_OBS"))
-        
+
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         hdul.writeto(path, overwrite=True)
-    
+
     def plot_corner(self, path):
-        """Generate corner plot with mathematical labels."""
+        """Corner plot of the posterior with the best-fit point marked."""
         import matplotlib
         matplotlib.use("Agg")
         matplotlib.rcParams.update({
@@ -102,12 +121,13 @@ class MCMCResult:
         import matplotlib.pyplot as plt
         samples = self.posterior
         best = list(self.bestfit.values())
-        # Use mathematical labels
         raw_labels = list(self.bestfit.keys())
         _label_map = {
             "logZsun": r"$\log(Z/Z_\odot)$",
             "t0":      r"$t_0\ \mathrm{(Gyr)}$",
             "tau":     r"$\tau\ \mathrm{(Gyr)}$",
+            "alpha":   r"$\alpha$",
+            "beta":    r"$\beta$",
         }
         labels = [_label_map.get(k, k) for k in raw_labels]
         fig = corner.corner(samples, labels=labels, truths=best,
@@ -119,7 +139,7 @@ class MCMCResult:
         plt.close(fig)
 
     def plot_bestfit(self, path):
-        """Plot best-fit CSP vs observed spectrum."""
+        """Best-fit CSP vs the observed spectrum."""
         import matplotlib
         matplotlib.use("Agg")
         matplotlib.rcParams.update({
@@ -129,52 +149,57 @@ class MCMCResult:
             "font.size": 12,
         })
         import matplotlib.pyplot as plt
-        import numpy as np
-        like = self._like
+        model = self._model
         best = self.bestfit
-        sfh_cls = self._sampler.sfh_class
-        sfh = sfh_cls(**{k: v for k, v in best.items() if k != "logZsun"},
-                       age_universe=13.8)
         logZ = best.get("logZsun", 0.0)
-        csp = like.builder.build(logZ, sfh)
-        csp = like.broadener.apply(csp)
-        n = like._med5500(like.ssp.wave, csp, np.ones_like(csp, dtype=bool), like._n_range)
-        csp = csp / n
-        csp = like.dust.apply(csp)
-        csp_obs = np.interp(like.obs_wave, like.ssp.wave, csp, left=0.0, right=0.0)
-        n_obs = 1.0 / np.median(like.obs_flux[like.obs_mask])
+        csp_obs = self.bestfit_model()
+        n_obs = 1.0 / np.median(model.obs_flux[model.obs_mask])
 
-        # Build title with proper math notation
         Z = 0.02 * 10 ** logZ
-        _name_map = {"logZsun": r"\log(Z/Z_\odot)", "t0": "t_0", "tau": r"\tau"}
+        _name_map = {"logZsun": r"\log(Z/Z_\odot)", "t0": "t_0", "tau": r"\tau",
+                     "alpha": r"\alpha", "beta": r"\beta"}
         title_parts = []
         for k, v in best.items():
             label = _name_map.get(k, k)
             title_parts.append(rf"${label} = {v:.3f}$")
         title_parts.append(rf"$Z = {Z:.5f}$")
 
-        fig, ax = plt.subplots(figsize=(12, 4))
-        ax.plot(like.obs_wave, like.obs_flux * n_obs, 'k-', lw=0.5,
-                label=r'$\mathrm{Observed}$')
-        ax.plot(like.obs_wave, csp_obs * n_obs, 'r-', lw=1,
-                label=r'$\mathrm{Best\ fit\ CSP}$')
-        ax.set_xlabel(r'$\lambda\ (\mathrm{\AA})$')
-        ax.set_ylabel(r'$\mathrm{Normalized}\ F_\lambda$')
-        ax.set_title(r'$\mathrm{MCMC\ Best\ Fit:}\ $' + r'$,\ $'.join(title_parts))
-        ax.legend(frameon=True, fontsize=11)
+        fig, (ax1, ax2, ax3) = plt.subplots(
+            3, 1, figsize=(12, 8), sharex=True,
+            gridspec_kw={"height_ratios": [2, 1, 1]})
+
+        obs = model.obs_flux * n_obs
+        mod = csp_obs * n_obs
+        resid = mod - obs
+        good = model.obs_mask
+
+        # Top: full range (observed + best-fit CSP).
+        ax1.plot(model.obs_wave, obs, 'k-', lw=0.5, label=r'$\mathrm{Observed}$')
+        ax1.plot(model.obs_wave, mod, 'r-', lw=1, label=r'$\mathrm{Best\ fit\ CSP}$')
+        ax1.set_ylabel(r'$\mathrm{Normalized}\ F_\lambda$')
+        ax1.set_title(r'$\mathrm{MCMC\ Best\ Fit:}\ $' + r'$,\ $'.join(title_parts))
+        ax1.legend(frameon=True, fontsize=11)
+
+        # Middle: same curves, y-axis zoomed on the good-pixel range.
+        ax2.plot(model.obs_wave, obs, 'k-', lw=0.5)
+        ax2.plot(model.obs_wave, mod, 'r-', lw=1)
+        ax2.set_ylim(*_robust_ylim([obs, mod], good))
+        ax2.set_ylabel(r'$\mathrm{Normalized}\ F_\lambda$')
+
+        # Bottom: residual (CSP - observed), zoomed.
+        ax3.axhline(0.0, color='k', ls='--', lw=0.8)
+        ax3.plot(model.obs_wave, resid, 'k-', lw=0.5)
+        ax3.set_ylim(*_robust_ylim([resid], good))
+        ax3.set_ylabel(r'$\mathrm{CSP} - \mathrm{Observed}$')
+        ax3.set_xlabel(r'$\lambda\ (\mathrm{\AA})$')
+        ax3.set_xlim(model.obs_wave[0], model.obs_wave[-1])
+
+        fig.tight_layout()
         fig.savefig(path, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
     def plot_sfh(self, path, n_samples=500):
-        """Plot star formation history with 68% confidence interval.
-        
-        Parameters
-        ----------
-        path : str
-            Output file path.
-        n_samples : int
-            Number of posterior samples to use for CI computation.
-        """
+        """Star formation history: 68% credible interval + median."""
         import matplotlib
         matplotlib.use("Agg")
         matplotlib.rcParams.update({
@@ -184,36 +209,30 @@ class MCMCResult:
             "font.size": 12,
         })
         import matplotlib.pyplot as plt
-        import numpy as np
-        like = self._like
+        model = self._model
         post = self.posterior
         names = self._sampler.param_names
 
-        # Build SFH param name → posterior column index map
-        _sfh_param_idx = {name: i for i, name in enumerate(names) if name != "logZsun"}
-        _logZ_idx = names.index("logZsun") if "logZsun" in names else None
+        _sfh_param_idx = {name: i for i, name in enumerate(names)
+                          if name != "logZsun"}
+        cosmic_time = np.max(model.ssp.time) - model.ssp.time
 
-        cosmic_time = np.max(like.ssp.time) - like.ssp.time
-
-        # Subsample posterior for efficiency
         n_use = min(n_samples, len(post))
         idx = np.random.choice(len(post), n_use, replace=False)
         post_sub = post[idx]
 
-        # Evaluate SFH for each posterior sample
         sfr_grid = np.zeros((n_use, len(cosmic_time)))
         for i in range(n_use):
             sfh_kwargs = {name: post_sub[i, j] for name, j in _sfh_param_idx.items()}
-            sfh = self._sampler.sfh_class(**sfh_kwargs, age_universe=13.8)
-            sfr_grid[i] = sfh.evaluate(like.ssp.time)
+            sfh = self._sampler.sfh_class(**sfh_kwargs)
+            sfr_grid[i] = sfh.evaluate(model.ssp.time)
 
-        # Compute percentiles
         sfr_lo = np.percentile(sfr_grid, 16, axis=0)
         sfr_med = np.percentile(sfr_grid, 50, axis=0)
         sfr_hi = np.percentile(sfr_grid, 84, axis=0)
 
-        # Build title with posterior medians
-        _name_map = {"logZsun": r"\log(Z/Z_\odot)", "t0": "t_0", "tau": r"\tau"}
+        _name_map = {"logZsun": r"\log(Z/Z_\odot)", "t0": "t_0", "tau": r"\tau",
+                     "alpha": r"\alpha", "beta": r"\beta"}
         title_parts = []
         for name in names:
             col = names.index(name)
@@ -225,59 +244,57 @@ class MCMCResult:
                 rf"${label} = {med:.3f}^{{+{hi-med:.3f}}}_{{-{med-lo:.3f}}}$"
             )
 
+        best = self.bestfit
+        best_sfr = self._sampler.sfh_class(
+            **{name: best[name] for name in _sfh_param_idx}).evaluate(model.ssp.time)
+
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.fill_between(cosmic_time, sfr_lo, sfr_hi, color='b', alpha=0.2,
                         label=r'$68\%\ \mathrm{CI}$')
         ax.plot(cosmic_time, sfr_med, 'b-', lw=1.5, label=r'$\mathrm{Median}$')
+        ax.plot(cosmic_time, best_sfr, 'r--', lw=1.2, label=r'$\mathrm{Best-fit}$')
         ax.set_xlabel(r'$\mathrm{Age\ of\ Universe\ (Gyr)}$')
         ax.set_ylabel(r'$\mathrm{SFR\ (arbitrary\ units)}$')
-        ax.set_title(r'$\mathrm{Star\ Formation\ History:}\ $' + r'$,\ $'.join(title_parts),
-                     fontsize=10)
-        ax.legend(frameon=True, fontsize=10)
+        ax.set_title(r'$\mathrm{Star\ Formation\ History:}\ $'
+                     + r'$,\ $'.join(title_parts), fontsize=10)
+        ax.legend(frameon=True, fontsize=10, loc="upper left")
         fig.savefig(path, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
 
 class MCMCFitter:
-    """Bayesian MCMC spectral fitting for stellar population parameters.
-    
+    """Bayesian MCMC spectral fitting with Nested Slice Sampling.
+
     Parameters
     ----------
     ssp_fits : str
-        Path to SSP template FITS file.
+        Path to the SSP template FITS file.
     specfit_result : SpecFitResult
-        SpecFit results providing ve, vd, dust curve, and preprocessed spectrum.
+        SpecFit results (kinematics, dust curve, preprocessed spectrum).
     sfh_model : str or type, optional
-        SFH model ("delayed" default, or SFHBase subclass).
+        ``"dpl"`` (default) or ``"delayed"``, or an ``SFHBase`` subclass.
     wave_range : tuple, optional
         SSP wavelength range (default: (3600, 7400)).
     emission_mask : list, optional
-        Additional emission line regions to mask (default: uses SpecFit's mask).
-    use_jax : bool, optional
-        Use JAX-accelerated likelihood backend (default: True; silently
-        falls back to NumPy if ``jax`` is not installed).
+        Additional emission-line regions to mask.
     """
 
-    def __init__(self, ssp_fits, specfit_result, sfh_model="delayed",
-                 wave_range=(3600, 7400), emission_mask=None,
-                 use_jax=True):
+    def __init__(self, ssp_fits, specfit_result, sfh_model="dpl",
+                 wave_range=(3600, 7400), emission_mask=None):
         self.ssp = SSPLibrary(ssp_fits, wave_range=wave_range)
         self._specfit = specfit_result
         self._sfh_model = sfh_model
 
-        # Use preprocessed data from SpecFit (rest-frame, trimmed, MW corrected)
         self._wave_obs = np.asarray(specfit_result.wave_prep, dtype=float)
         self._flux_obs = np.asarray(specfit_result.flux_prep, dtype=float)
         self._error_obs = np.asarray(specfit_result.error_prep, dtype=float)
 
-        # Build mask: combine SpecFit mask + optional additional emission mask
         self._obs_mask = np.asarray(specfit_result.mask_prep, dtype=bool)
         if emission_mask is not None:
             from ..mask import build_emission_mask
             em = build_emission_mask(self._wave_obs, emission_mask)
             self._obs_mask = self._obs_mask & em
 
-        # Build dust from SpecFit
         p1 = getattr(specfit_result, 'p1', 0.0)
         p2 = getattr(specfit_result, 'p2', 0.0)
         self._dust = DustAttenuation.from_mode2(self.ssp.wave, p1, p2)
@@ -285,76 +302,60 @@ class MCMCFitter:
         ve = specfit_result.ve[0]
         vd = specfit_result.vd[0]
 
-        # Always build NumPy Likelihood (for plotting, backward compat)
-        self._likelihood = Likelihood(
+        # NumPy model container (plots / saving) and the JAX likelihood.
+        self._model = ModelComponents(
+            self.ssp, self._wave_obs, self._flux_obs, self._error_obs,
+            self._obs_mask, ve, vd, self._dust,
+        )
+        self._likelihood = JAXLikelihood(
             self.ssp, self._wave_obs, self._flux_obs, self._error_obs,
             self._obs_mask, ve, vd, self._dust,
         )
 
-        # Optionally build JAX Likelihood (for faster sampling)
-        self._use_jax = use_jax
-        if use_jax:
-            try:
-                from .likelihood_jax import JAXLikelihood
-                self._likelihood_jax = JAXLikelihood(
-                    self.ssp, self._wave_obs, self._flux_obs, self._error_obs,
-                    self._obs_mask, ve, vd, self._dust,
-                )
-            except ImportError:
-                self._use_jax = False
-    
-    def run(self, n_live=400, chain_dir=None, priors=None,
-            frac_remain=0.5, max_ncalls=None, dlogz=0.5,
-            min_ess=400, Lepsilon=0.001, max_iters=None, **kwargs):
-        """Run MCMC sampling.
-        
+    def run(self, n_live=DEFAULT_N_LIVE, num_delete=DEFAULT_NUM_DELETE,
+            num_inner_steps=DEFAULT_NUM_INNER_STEPS,
+            priors=None, seed=0, max_ncalls=None, out_dir=None):
+        """Run Nested Slice Sampling.
+
         Parameters
         ----------
         n_live : int
-            Number of live points.
-        chain_dir : str, required
-            Output directory for UltraNest chains.
+            Number of live points (default 1000).
+        num_delete : int
+            Number of live points replaced per step (default 100).
+        num_inner_steps : int
+            Inner slice steps per replacement (default 10); use at least
+            ``2 * n_params`` for harder posteriors.
         priors : dict, optional
-            Parameter name -> Prior object. Uses SFH defaults if None.
-        frac_remain : float
-            Fraction of likelihood calls for posterior sampling.
+            Parameter name -> :class:`Prior`; merged over the model defaults.
+        seed : int
+            PRNG seed (the run is deterministic for a fixed seed).
         max_ncalls : int, optional
-            Maximum likelihood evaluations.
-        dlogz : float
-            Evidence tolerance.
-        min_ess : int
-            Minimum effective sample size.
-        Lepsilon : float
-            Likelihood contour accuracy.
-        max_iters : int, optional
-            Maximum iterations.
-        **kwargs
-            Passed to ultranest.ReactiveNestedSampler.run().
+            Soft cap on dead points.
+        out_dir : str, optional
+            If given, save the finalised sampling state (positions,
+            log-likelihoods, configuration, best-fit, posterior) to
+            ``<out_dir>/state.npz`` for later auditing / re-analysis.
         """
-        if chain_dir is None:
-            raise ValueError("chain_dir is required")
-
-        likelihood = self._likelihood_jax if self._use_jax else self._likelihood
-
-        sampler = UltraNestSampler(
-            likelihood, chain_dir, self._sfh_model, priors=priors
+        sampler = NSSampler(
+            self._likelihood, self._sfh_model, priors=priors,
+            n_live=n_live, num_delete=num_delete,
+            num_inner_steps=num_inner_steps,
         )
-        
-        sampler.run(
-            min_live_points=n_live,
-            max_ncalls=max_ncalls,
-            frac_remain=frac_remain,
-            dlogz=dlogz,
-            min_ess=min_ess,
-            Lepsilon=Lepsilon,
-            max_iters=max_iters,
-            **kwargs
-        )
-        
+        sampler.run(max_ncalls=max_ncalls, seed=seed)
+
+        if out_dir is not None:
+            sampler.save_state(os.path.join(out_dir, "state.npz"))
+
         self._sampler = sampler
-        return MCMCResult(sampler, likelihood_np=self._likelihood)
-    
+        return MCMCResult(sampler, self._model)
+
     @property
     def likelihood(self):
-        """NumPy Likelihood (for plotting and inspection)."""
+        """The JAX likelihood."""
         return self._likelihood
+
+    @property
+    def model(self):
+        """The NumPy model container (plots / saving)."""
+        return self._model

@@ -1,1 +1,0 @@
-# bigspy MCMC subpackage

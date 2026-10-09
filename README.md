@@ -1,11 +1,11 @@
 # bigspy — Bayesian Inference of Galaxy Spectra (Python)
 
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
 
 Two-stage spectral fitting of galaxy spectra:
 
 1. **SpecFit** — PCA fitting for stellar kinematics ($v_e$, $v_d$) and dust attenuation
-2. **MCMC** — Bayesian inference of stellar population parameters via UltraNest nested sampling
+2. **MCMC** — Bayesian inference of stellar population parameters via blackjax Nested Slice Sampling
 
 ## Installation
 
@@ -17,8 +17,8 @@ git lfs clone https://github.com/Zcheng14/bigspy.git
 # Or if already cloned without LFS:
 git lfs pull
 
-# 2. Create environment (optional but recommended)
-conda create -n bigspy python=3.10
+# 2. Create environment (requires Python >= 3.11 for blackjax)
+conda create -n bigspy python=3.11
 conda activate bigspy
 
 # 3. Install bigspy
@@ -26,7 +26,7 @@ cd bigspy
 pip install -e .
 ```
 
-Requires Python ≥ 3.9. Dependencies (auto-installed): `numpy`, `scipy`, `astropy`, `lmfit`, `ultranest`, `matplotlib`, `corner`, `jax`, `jaxlib`, `h5py`.
+Requires Python ≥ 3.11. Dependencies (auto-installed): `numpy`, `scipy`, `astropy`, `lmfit`, `matplotlib`, `corner`, `jax`, `jaxlib`, `blackjax`.
 
 ## Quick Start
 
@@ -47,22 +47,22 @@ specfit = sf.fit(
 print(f"v_e = {specfit.ve[0]:.1f} ± {specfit.ve[1]:.1f} km/s")
 print(f"v_d = {specfit.vd[0]:.1f} ± {specfit.vd[1]:.1f} km/s")
 
-# ---- 2. MCMC — stellar population inference ----
+# ---- 2. MCMC — stellar population inference (NSS) ----
 mc = MCMCFitter(
     ssp_fits="template/SSP_BC03_Padova1994_chab.fits",
     specfit_result=specfit,
-    sfh_model="delayed",              # "delayed" or custom SFHBase subclass
+    sfh_model="dpl",                  # "dpl" (default), "delayed", or custom SFHBase
     wave_range=(3600, 7400),
-    use_jax=True,                     # JAX JIT acceleration (default; auto-fallback to NumPy)
+    # NSS controls (defaults): n_live=1000, num_delete=100, num_inner_steps=10
 )
 mcmc_result = mc.run(
-    n_live=400,
-    chain_dir="out/chains_galaxy",
-    frac_remain=0.5,
+    n_live=1000,                      # live points
+    out_dir="out/state_galaxy",       # optional: saves state.npz for auditing
+    seed=0,
 )
 
-best = mcmc_result.bestfit       # dict: {"t0": ..., "tau": ..., "logZsun": ...}
-post = mcmc_result.posterior     # (N, 3) ndarray
+best = mcmc_result.bestfit       # dict: {"tau": ..., "alpha": ..., "beta": ..., "logZsun": ...}
+post = mcmc_result.posterior     # (N, 4) ndarray
 print(f"Best fit: {best}")
 print(f"log Z    = {mcmc_result.log_evidence:.2f}")
 ```
@@ -93,7 +93,16 @@ print(f"log Z    = {mcmc_result.log_evidence:.2f}")
 
 ### SFH Models
 
-**Built-in**: `DelayedExponentialSFH(t0, tau, age_universe=13.8)`
+**Built-in (default)**: `DoublePowerLawSFH(tau, alpha, beta)`
+
+```
+SFR(t) = 1 / ( (t/τ)^α + (t/τ)^(−β) )
+```
+
+where $t$ is cosmic time (0 = Big Bang, max = present). `tau` sets the turnover
+time, `alpha` the rising slope and `beta` the falling slope.
+
+**Built-in**: `DelayedExponentialSFH(t0, tau)`
 
 ```
 SFR(t) = 0                         for t ≤ t₀
@@ -105,11 +114,15 @@ where $t$ is cosmic time (0 = Big Bang, max = present).
 - `t0` — formation start time (Gyr after Big Bang). Smaller → earlier formation.
 - `tau` — decay timescale (Gyr). Larger → SFR declines more slowly.
 
-**Custom SFH** — subclass `SFHBase`:
+**Custom SFH** — subclass `SFHBase`. A model provides a NumPy `evaluate` (used for
+plotting / model building) and a JAX `evaluate_batch_jax` (required by the NSS
+sampler):
 
 ```python
+import numpy as np
+import jax.numpy as jnp
 from bigspy.mcmc.sfh import SFHBase
-from bigspy import LogUniformPrior
+from bigspy import LogUniformPrior, UniformPrior
 
 class MySFH(SFHBase):
     n_params = 2
@@ -119,21 +132,28 @@ class MySFH(SFHBase):
         "beta": UniformPrior(0.0, 5.0),
     }
 
-    def __init__(self, tau, beta, age_universe=13.8):
+    def __init__(self, tau, beta):
         self.tau = float(tau)
         self.beta = float(beta)
-        self.age_universe = float(age_universe)
 
-    def evaluate(self, timegrid):
+    def evaluate(self, timegrid):                    # NumPy
         t = np.max(timegrid) - timegrid
-        sfr = t**self.beta * np.exp(-t / self.tau)
-        sfr[timegrid > self.age_universe] = 0.0
-        return sfr
+        return t**self.beta * np.exp(-t / self.tau)
+
+    @classmethod
+    def evaluate_batch_jax(cls, timegrid, params_2d):  # JAX (for sampling)
+        tau = params_2d[:, 0][:, None]
+        beta = params_2d[:, 1][:, None]
+        t = jnp.max(timegrid) - timegrid
+        return t[None, :]**beta * jnp.exp(-t[None, :] / tau)
 
 mc = MCMCFitter(..., sfh_model=MySFH)
 ```
 
-Required interface: `n_params`, `param_names`, `default_priors`, `__init__(**params)`, `evaluate(timegrid)`.
+Required interface: `n_params`, `param_names`, `default_priors`,
+`__init__(**params)`, `evaluate(timegrid)` (NumPy) and
+`evaluate_batch_jax(timegrid, params_2d)` (JAX). See `DelayedExponentialSFH` /
+`DoublePowerLawSFH` for examples.
 
 ### Priors
 
@@ -161,8 +181,8 @@ mc.run(
 
 | Method / Property | Description |
 |-------------------|-------------|
-| `MCMCFitter(ssp_fits, specfit_result, sfh_model, use_jax=True, ...)` | Set up MCMC. JAX JIT-accelerated by default |
-| `mc.run(n_live, chain_dir, priors=..., ...)` | Run UltraNest, return `MCMCResult` |
+| `MCMCFitter(ssp_fits, specfit_result, sfh_model="dpl", ...)` | Set up the model (SSP + SpecFitResult + JAX likelihood) |
+| `mc.run(n_live=1000, num_delete=100, num_inner_steps=10, priors=..., seed=0, out_dir=None)` | Run blackjax NSS, return `MCMCResult` |
 | `result.bestfit` | Best-fit parameter dict |
 | `result.posterior` | Posterior samples `(N, n_params)` ndarray |
 | `result.log_evidence` | log(Z) model evidence |
@@ -186,26 +206,28 @@ mc.run(
 | `CSP` | Best-fit CSP on SSP wavelength grid |
 | `CSP_OBS` | Best-fit CSP interpolated to observed grid |
 
-## JAX Acceleration
+## Sampling backend
 
-Add `use_jax=True` for JIT-compiled likelihood evaluation, significantly faster than NumPy on CPU:
+Sampling uses blackjax Nested Slice Sampling (`blackjax.nss`) with a JAX-only
+likelihood. Default controls: `n_live=1000`, `num_delete=100`,
+`num_inner_steps=10`. Increase `num_inner_steps` (to at least `2*dim`) for harder
+or more degenerate posteriors. A JAX-capable SFH (``evaluate_batch_jax``) is
+required; the NumPy model chain is used only for plotting and saving.
 
 ```python
-mc = MCMCFitter(..., use_jax=True)
-mc.run(n_live=400, chain_dir="out/chains")
+mc = MCMCFitter(..., sfh_model="dpl")
+mc.run(n_live=1000, seed=0, out_dir="out/state")
 ```
-
-The NumPy backend is retained internally for plotting compatibility.
 
 ## Running the Demo
 
 ```bash
-# Jupyter notebooks (recommended)
-jupyter notebook example/bigspy_demo_jax.ipynb      # pkl test spectra
-jupyter notebook example/bigspy_manga_demo.ipynb    # MaNGA datacube
+python example/run_bigspy.py
 ```
 
-Both walk through the full pipeline: load data → SpecFit → MCMC → visualization → custom SFH.
+Runs the full pipeline (load data → SpecFit → NSS MCMC → figures) on the bundled
+MaNGA test spectrum, writing figures to `out/figs/`. The notebook
+`example/bigspy_demo.ipynb` covers the same workflow interactively.
 
 ## License
 
@@ -217,7 +239,7 @@ MIT. See [LICENSE](LICENSE).
 
 - Zhou S., Mo H. J., Li C., et al., 2019, MNRAS, 485, 5256 — *"SDSS-IV MaNGA: stellar initial mass function variation inferred from Bayesian analysis of the integral field spectroscopy of early-type galaxies"* — [2019MNRAS.485.5256Z](https://ui.adsabs.harvard.edu/abs/2019MNRAS.485.5256Z)
 - Li N., Li C., Mo H. J., Hu J., Zhou S., Du C., 2020, ApJ, 896, 38 — *"Estimating Dust Attenuation from Galactic Spectra. I. Methodology and Tests"* — [2020ApJ...896...38L](https://ui.adsabs.harvard.edu/abs/2020ApJ...896...38L)
-- Buchner J., 2021, JOSS, 6(60), 3001 — *"UltraNest — a robust, general purpose Bayesian inference engine"* — [10.21105/joss.03001](https://doi.org/10.21105/joss.03001)
+- Yallup D., Kroupa N., Handley W., 2026, TMLR — *"Nested Slice Sampling: Vectorized Nested Sampling for GPU-Accelerated Inference"* — [arXiv:2601.23252](https://arxiv.org/abs/2601.23252)
 
 **Related work:**
 

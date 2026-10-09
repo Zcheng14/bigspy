@@ -1,10 +1,12 @@
-"""
-Velocity broadening — Gaussian convolution for spectral kinematics.
-Batch-capable for UltraNest vectorized sampling.
+"""Velocity broadening -- Gaussian convolution for spectral kinematics.
+
+Provides a dense convolution matrix, cached and batch-capable.
 """
 from functools import lru_cache
 
 import numpy as np
+
+from ..constants import DLOGW_VEL
 
 
 def _build_convolution_matrix(n_pix, sigma_pix, x0_pix=0.0):
@@ -125,8 +127,8 @@ class VelocityBroadening:
         Velocity spacing per pixel (km/s).
     """
     
-    DLOGW_VEL = (10 ** 0.0001 - 1) * 299792.458
-    
+    DLOGW_VEL = DLOGW_VEL  # class attribute kept for backward compatibility
+
     def __init__(self, vd, velscale=None):
         if velscale is None:
             velscale = self.DLOGW_VEL

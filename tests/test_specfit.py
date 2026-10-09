@@ -1,55 +1,269 @@
-"""Tests for SpecFit module."""
+"""Tests for bigspy.specfit: utilities, preprocessing, fitting (synthetic + data)."""
+
+import os
 
 import numpy as np
 import pytest
+import lmfit
 from conftest import requires_data
 
+import _synth
 from bigspy import SpecFit, SpecFitResult
+from bigspy.io import read_specfit_fits, write_observed_fits
 from bigspy.specfit import (
-    calz_unred, ccm_unred, air_to_vacuum_wave, gauss_convolve,
+    C, DLOGW, calz_unred, calz_klam, ccm_unred, gauss_convolve,
     load_pca_templates, load_test_spectrum, preprocess_spectrum,
-    fit_spectrum,
+    fit_spectrum, run_mode2, mean_filter, _A_lambda_fcn,
 )
+from bigspy.utils import air_to_vacuum_wave
+from bigspy.mcmc.kinematics import gauss_convolve as mcmc_gauss_convolve
 
+
+# ═══════════════════════════════════════════════════════════════════
+#  Utility functions
+# ═══════════════════════════════════════════════════════════════════
 
 class TestUtilityFunctions:
     def test_air_to_vacuum(self):
         w = np.array([4000.0, 5500.0, 7000.0])
-        wv = air_to_vacuum_wave(w)
-        assert len(wv) == 3
-        assert np.all(wv > w)
+        assert np.all(air_to_vacuum_wave(w) > w)
 
     def test_calz_unred_identity(self):
         w = np.linspace(1000, 8000, 100)
-        c = calz_unred(w, 0.0)
-        assert np.allclose(c, 1.0)
+        assert np.allclose(calz_unred(w, 0.0), 1.0)
 
     def test_calz_unred_ebv_positive(self):
-        w = np.linspace(4000, 7000, 50)
-        c = calz_unred(w, 0.1)
-        assert np.all(c > 1.0)  # deredden = brighten
+        assert np.all(calz_unred(np.linspace(4000, 7000, 50), 0.1) > 1.0)
 
     def test_gauss_convolve_noop(self):
         y = np.array([1.0, 2.0, 3.0])
-        result = gauss_convolve(y, 0.0)
-        assert np.allclose(result, y)
+        assert np.allclose(gauss_convolve(y, 0.0), y)
 
     def test_gauss_convolve_normalised(self):
-        y = np.ones(200)
-        result = gauss_convolve(y, 5.0)
-        # Interior values should be 1.0, edges may deviate due to boundary
-        mid = result[50:150]
-        np.testing.assert_allclose(mid, 1.0, atol=1e-6)
+        result = gauss_convolve(np.ones(200), 5.0)
+        np.testing.assert_allclose(result[50:150], 1.0, atol=1e-6)
+
+
+class TestCCMUnred:
+    def test_zero_ebv_identity(self):
+        w = np.array([200.0, 3000.0, 5500.0, 9000.0, 30000.0])
+        np.testing.assert_allclose(ccm_unred(w, 0.0), 1.0)
+
+    def test_positive_ebv_reddens_blue(self):
+        c = ccm_unred(np.array([3000.0, 10000.0]), 0.1)
+        assert c[0] > c[1] > 1.0
+
+    def test_branch_continuity(self):
+        for xb in (1.1, 3.3, 8.0):
+            lo = ccm_unred(np.array([1e4 / (xb - 5e-4)]), 0.1)[0]
+            hi = ccm_unred(np.array([1e4 / (xb + 5e-4)]), 0.1)[0]
+            assert abs(lo / hi - 1.0) < 0.03, f"discontinuity at x={xb}"
+
+
+class TestGaussConvolveSpecFit:
+    def test_matches_mcmc_module(self):
+        rng = np.random.RandomState(0)
+        y = rng.normal(0, 1, 120)
+        for sigma, x0 in [(2.0, 0.0), (2.0, 1.5), (1.5, -2.0)]:
+            np.testing.assert_allclose(gauss_convolve(y, sigma, x0),
+                                       mcmc_gauss_convolve(y, sigma, x0), atol=1e-14)
+
+    def test_x0_shifts_peak(self):
+        delta = np.zeros(80)
+        delta[30] = 1.0
+        assert np.argmax(gauss_convolve(delta, 1.5, 2.0)) == 32
+
+
+class TestMeanFilter:
+    def test_linear_flux_detail_zero(self):
+        wave = np.linspace(4000, 5000, 1001)
+        flux = 2.0 + 0.001 * (wave - 4000)
+        assert np.max(np.abs(mean_filter(flux, wave, 200.0))) < 1e-9
+
+    def test_constant_flux_detail_zero(self):
+        wave = np.linspace(4000, 5000, 1001)
+        assert np.max(np.abs(mean_filter(np.full(1001, 3.0), wave, 200.0))) < 1e-12
+
+    def test_masked_delta_localized(self):
+        wave = np.linspace(4000, 5000, 1001)
+        p = 500
+        flux = np.full(1001, 1.0)
+        flux[p] += 5.0
+        mask = np.ones(1001)
+        mask[p] = 0.0
+        detail = mean_filter(flux, wave, 200.0, mask=mask)
+        assert detail[p] > 1.0
+        assert np.median(np.abs(detail)) < 1e-10
+
+    @staticmethod
+    def _naive_mean_filter(flux, wave, wave_win, mask=None):
+        n_wave = len(wave)
+        wmin = int(np.ceil(wave[0]))
+        wmax = int(np.floor(wave[-1]))
+        wave_tmp = np.arange(wmin, wmax + 1, dtype=float)
+        flux_tmp = np.interp(wave_tmp, wave, flux)
+        if mask is not None:
+            mask_tmp = np.interp(wave_tmp, wave, mask)
+            mask_tmp[mask_tmp > 0] = 1.0
+            if mask_tmp.sum() == 0:
+                mask_tmp[0] = 1.0
+            u = np.where(mask_tmp == 1.0)[0]
+            mask_tmp[:u[0] + 1] = 1.0
+            mask_tmp[u[-1]:] = 1.0
+        k = int(wave_win / 2)
+        n = len(flux_tmp)
+        unres = flux_tmp.copy()
+        for i in range(k, n - k):
+            if mask is not None:
+                eff = (mask_tmp[i - k:i + k + 1] == 1.0).sum()
+                if eff == 0:
+                    eff = 1
+                unres[i] = (flux_tmp[i - k:i + k + 1]
+                            * mask_tmp[i - k:i + k + 1]).sum() / eff
+            else:
+                unres[i] = np.mean(flux_tmp[i - k:i + k + 1])
+                if unres[i] == 0:
+                    unres[i] = flux_tmp[i]
+        return np.interp(wave, wave_tmp, flux_tmp - unres)
+
+    def test_matches_naive_reference(self):
+        wave = np.linspace(4000, 5000, 1001)
+        rng = np.random.RandomState(9)
+        flux = rng.uniform(0.5, 2.0, 1001)
+        mask_all = np.ones(1001)
+        mask_rand = (rng.uniform(0, 1, 1001) > 0.2).astype(float)
+        for wave_win in (200.0, 400.0):
+            for mask in (None, mask_all, mask_rand):
+                detail = mean_filter(flux, wave, wave_win, mask=mask)
+                ref = self._naive_mean_filter(flux, wave, wave_win, mask=mask)
+                np.testing.assert_array_equal(detail, ref)
+
+    def test_edge_pixels_untouched(self):
+        wave = np.linspace(4000, 5000, 1001)
+        flux = np.linspace(1.0, 2.0, 1001)
+        k = 100
+        detail = mean_filter(flux, wave, 200.0)
+        np.testing.assert_array_equal(detail[:k], np.zeros(k))
+        np.testing.assert_array_equal(detail[-k:], np.zeros(k))
+
+    def test_window_wider_than_array(self):
+        wave = np.linspace(4000, 4050, 51)
+        flux = np.random.RandomState(10).uniform(0.5, 2.0, 51)
+        mask = np.ones(51)
+        mask[10] = 0.0
+        assert np.max(np.abs(mean_filter(flux, wave, 200.0))) < 1e-15
+        assert np.max(np.abs(mean_filter(flux, wave, 200.0, mask=mask))) < 1e-15
+
+
+class TestALambdaFcn:
+    @staticmethod
+    def _model(p1, p2, wave):
+        x = 1e4 / wave
+        xv = 1e4 / 5500.0
+        return p1 * x + p2 * x ** 2 - p1 * xv - p2 * xv ** 2
+
+    def test_fit_true_residual(self):
+        params = lmfit.Parameters()
+        params.add("p1", value=0.5)
+        params.add("p2", value=-0.05)
+        wave = np.linspace(4000, 6000, 50)
+        data = np.linspace(0.1, -0.1, 50)
+        np.testing.assert_allclose(
+            _A_lambda_fcn(params, wave, data, fit=True),
+            self._model(0.5, -0.05, wave) - data, atol=1e-14)
+
+    def test_fit_false_model(self):
+        params = lmfit.Parameters()
+        params.add("p1", value=0.5)
+        params.add("p2", value=-0.05)
+        wave = np.linspace(4000, 6000, 50)
+        np.testing.assert_allclose(_A_lambda_fcn(params, wave, None, fit=False),
+                                   self._model(0.5, -0.05, wave), atol=1e-14)
+
+
+class TestCalzKlam:
+    @staticmethod
+    def _klam_ref(wave):
+        wave = np.asarray(wave, dtype=float)
+        x = 10000.0 / wave
+        klam = np.zeros_like(x)
+        Rv = 4.05
+        w1 = (wave >= 6300) & (wave <= 22000)
+        klam[w1] = 2.659 * (-1.857 + 1.040 * x[w1]) + Rv
+        w2 = (wave >= 912) & (wave < 6300)
+        p2 = np.poly1d(np.array([-2.156, 1.509, -0.198, 0.011])[::-1])
+        klam[w2] = 2.659 * p2(x[w2]) + Rv
+        return klam
+
+    def test_klam_reproduces_calz_unred(self):
+        w = np.linspace(900, 25000, 4001)
+        for ebv in (0.0, 0.1, -0.2):
+            np.testing.assert_array_equal(
+                10.0 ** (0.4 * self._klam_ref(w) * ebv), calz_unred(w, ebv))
+
+    def test_klam_branch_edges(self):
+        k = self._klam_ref
+        assert k(np.array([800.0]))[0] == 0.0
+        assert k(np.array([25000.0]))[0] == 0.0
+        x = 10000.0 / 5000.0
+        assert k(np.array([5000.0]))[0] == pytest.approx(
+            2.659 * np.polyval(np.array([0.011, -0.198, 1.509, -2.156]), x) + 4.05,
+            rel=1e-12)
+        x = 10000.0 / 7000.0
+        assert k(np.array([7000.0]))[0] == pytest.approx(
+            2.659 * (-1.857 + 1.040 * x) + 4.05, rel=1e-12)
+
+    def test_module_klam_matches_reference(self):
+        w = np.linspace(900, 25000, 4001)
+        np.testing.assert_array_equal(calz_klam(w), self._klam_ref(w))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Synthetic-data fixtures
+# ═══════════════════════════════════════════════════════════════════
+
+@pytest.fixture(scope="module")
+def synth_prep(synth_pca_file):
+    pca, wave_temp, velscale = load_pca_templates(synth_pca_file)
+    data, model = _synth.make_synthetic_obs()
+    prep = preprocess_spectrum(data, wave_temp, pca)
+    return prep, pca, wave_temp, velscale, data
+
+
+@pytest.fixture(scope="module")
+def synth_fit(synth_prep):
+    prep, pca, wave_temp, velscale, data = synth_prep
+    return fit_spectrum(prep, pca, wave_temp, mode="both")
+
+
+@pytest.fixture(scope="module")
+def synth_prep_ebv(synth_pca_file):
+    pca, wave_temp, velscale = load_pca_templates(synth_pca_file)
+    data, model = _synth.make_synthetic_obs(ebv=0.15)
+    prep = preprocess_spectrum(data, wave_temp, pca)
+    return prep, pca, wave_temp, velscale, data
+
+
+@pytest.fixture(scope="module")
+def synth_fit_ebv(synth_prep_ebv):
+    prep, pca, wave_temp, velscale, data = synth_prep_ebv
+    return fit_spectrum(prep, pca, wave_temp, mode="m1")
+
+
+class TestLoadPCATemplatesSynthetic:
+    def test_synthetic_fits(self, synth_pca_file):
+        pca, wave_temp, velscale = load_pca_templates(synth_pca_file)
+        np.testing.assert_allclose(pca, _synth.pca_rows()[:10], atol=1e-12)
+        np.testing.assert_array_equal(wave_temp, _synth.PCA_WAVE_LOG)
+        assert velscale == (10 ** DLOGW - 1) * C
 
 
 class TestPCALoading:
     @requires_data
     def test_load_pca_templates(self, pca_file):
         pca, wave, velscale = load_pca_templates(pca_file)
-        assert pca.ndim == 2
-        assert pca.shape[0] == 10  # FIT_NEIG
-        assert wave.ndim == 1
-        assert velscale > 0
+        assert pca.ndim == 2 and pca.shape[0] == 10
+        assert wave.ndim == 1 and velscale > 0
 
 
 class TestPreprocessing:
@@ -58,50 +272,268 @@ class TestPreprocessing:
         pca, wave_temp, velscale = load_pca_templates(pca_file)
         prep = preprocess_spectrum(test_data, wave_temp, pca)
         for key in ["wave", "flux", "flux_raw", "error", "mask", "temp_pca", "npix"]:
-            assert key in prep, f"Missing key: {key}"
+            assert key in prep
         assert prep["npix"] > 0
 
+
+class TestPreprocessSynthetic:
+    def test_alignment_norm_and_mask(self, synth_prep):
+        prep, pca, wave_temp, velscale, data = synth_prep
+        assert prep["npix"] > 0
+        assert prep["vsys"] == pytest.approx(
+            C * np.log(wave_temp[prep["it1"]] / prep["wave"][0]), abs=1e-9)
+        assert abs(prep["vsys"]) < 1e-6
+        i55 = int(np.argmin(np.abs(prep["wave"] - 5500)))
+        assert prep["flux"][i55] == pytest.approx(1.0, rel=1e-12)
+        m = (prep["wave"] >= 6555) & (prep["wave"] <= 6575)
+        assert m.sum() > 0 and np.all(prep["mask"][m] == 0)
+        rows = _synth.pca_rows()
+        np.testing.assert_allclose(
+            prep["temp_pca"],
+            rows[:10, prep["it1"]:prep["it1"] + prep["npix"]].T, atol=1e-12)
+
+    def test_fit_range_trims(self, synth_prep):
+        prep = synth_prep[0]
+        assert prep["wave"][0] >= 3600 and prep["wave"][-1] <= 7400
+
+    def test_mask_convention_zero_is_good(self, synth_pca_file):
+        pca, wave_temp, _ = load_pca_templates(synth_pca_file)
+        data, _ = _synth.make_synthetic_obs()
+        data_bad = dict(data)
+        data_bad["mask_obs"] = np.ones(len(data["wave_obs"]))
+        with pytest.raises(IndexError):
+            preprocess_spectrum(data_bad, wave_temp, pca)
+
+
+class TestRunMode1Synthetic:
+    def test_recovers_model(self, synth_prep, synth_fit):
+        prep = synth_prep[0]
+        r1 = synth_fit["mode1_result"]
+        assert r1.redchi < 1.5
+        assert abs(r1.params["ebv"].value) < 0.05
+        assert np.corrcoef(synth_fit["mode1_model"], prep["flux_raw"])[0, 1] > 0.999
+        assert np.all(np.isfinite(synth_fit["ve"]))
+        assert np.all(np.isfinite(synth_fit["vd"]))
+
+    def test_recovers_known_ebv(self, synth_prep_ebv, synth_fit_ebv):
+        prep = synth_prep_ebv[0]
+        r1 = synth_fit_ebv["mode1_result"]
+        assert abs(r1.params["ebv"].value - 0.15) < 0.05
+        assert r1.redchi < 2.0
+        assert np.corrcoef(synth_fit_ebv["mode1_model"], prep["flux_raw"])[0, 1] > 0.999
+
+
+class TestRunMode2Synthetic:
+    def test_dust_branch_returns_full_dict(self, synth_prep, synth_fit):
+        prep = synth_prep[0]
+        m2 = synth_fit["mode2_result"]
+        for key in ("p1", "p2", "ebv", "chi2r", "slr_flux", "dust_wave", "dust_A"):
+            assert key in m2
+        assert len(m2["dust_wave"]) > 100
+        assert len(m2["slr_flux"]) == prep["npix"]
+        assert np.isfinite(m2["chi2r"]) and m2["chi2r"] > 0
+        assert len(m2["dust_A"]) == len(m2["dust_wave"])
+
+    def test_best_wei_none_early_return(self, synth_prep, synth_fit):
+        prep, pca, wave_temp, velscale, data = synth_prep
+        mask = np.zeros(prep["npix"])
+        mask[100:105] = 1.0
+        m2 = run_mode2(prep["flux"], prep["error"], mask, prep["temp_pca"],
+                       prep["wave"], prep["vsys"], velscale,
+                       0.0, 0.0, synth_fit["mode1_result"],
+                       pca, prep["it1"], wave_temp)
+        assert m2 == {"p1": 0.0, "p2": 0.0,
+                      "ebv": synth_fit["mode1_result"].params["ebv"].value,
+                      "chi2r": 0.0, "slr_flux": None}
+
+    def test_no_crash_when_5500_window_masked(self, synth_prep, synth_fit):
+        prep, pca, wave_temp, velscale, data = synth_prep
+        mask = np.ones(prep["npix"])
+        mask[(prep["wave"] > 5450) & (prep["wave"] < 5550)] = 0.0
+        m2 = run_mode2(prep["flux"], prep["error"], mask, prep["temp_pca"],
+                       prep["wave"], prep["vsys"], velscale,
+                       0.0, 0.0, synth_fit["mode1_result"],
+                       pca, prep["it1"], wave_temp)
+        assert m2["p1"] == 0.0 and m2["p2"] == 0.0 and len(m2["dust_wave"]) == 0
+
+    def test_deterministic_repeat(self, synth_prep, synth_fit):
+        prep, pca, wave_temp, velscale, data = synth_prep
+        runs = []
+        for _ in range(2):
+            mask = prep["mask"].copy()
+            runs.append(run_mode2(prep["flux"], prep["error"], mask,
+                                  prep["temp_pca"], prep["wave"], prep["vsys"],
+                                  velscale, 0.0, 0.0,
+                                  synth_fit["mode1_result"],
+                                  pca, prep["it1"], wave_temp))
+        m2a, m2b = runs
+        for key in ("p1", "p2", "ebv", "chi2r"):
+            assert m2a[key] == m2b[key]
+        np.testing.assert_array_equal(m2a["slr_flux"], m2b["slr_flux"])
+        np.testing.assert_array_equal(m2a["dust_wave"], m2b["dust_wave"])
+        np.testing.assert_array_equal(m2a["dust_A"], m2b["dust_A"])
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  SpecFitResult direct construction
+# ═══════════════════════════════════════════════════════════════════
+
+@pytest.fixture()
+def direct_result():
+    w = np.linspace(4000, 5000, 500)
+    rng = np.random.RandomState(2)
+    fit_dict = {
+        "ve": np.array([30.0, 5.0]), "vd": np.array([120.0, 8.0]),
+        "ebv_m1": np.array([0.12, 0.02]), "chi2r_m1": 1.3,
+        "mode1_model": np.full(500, 1.5),
+        "mode1_dust": np.linspace(1.1, 0.9, 500),
+        "mode2_dust": np.linspace(1.05, 0.95, 500),
+        "mode2_result": {"p1": 0.05, "p2": -0.003, "ebv": 0.1,
+                         "dust_wave": np.linspace(4000, 5000, 50),
+                         "dust_A": np.linspace(0.0, 0.2, 50)},
+    }
+    prep_dict = {"wave": w, "flux_raw": 1.0 + 0.1 * rng.randn(500),
+                 "error_raw": np.full(500, 0.05), "mask": np.ones(500)}
+    return SpecFitResult(fit_dict, prep_dict), fit_dict, prep_dict
+
+
+class TestSpecFitResultDirect:
+    def test_attributes(self, direct_result):
+        res, fit_dict, _ = direct_result
+        assert res.ve == (30.0, 5.0) and res.vd == (120.0, 8.0)
+        assert res.ebv == (0.12, 0.02)
+        assert res.p1 == 0.05 and res.p2 == -0.003 and res.chi2 == 1.3
+        assert res.bestfit is fit_dict["mode1_model"]
+
+    def test_dust_curve_interp(self, direct_result):
+        res, fit_dict, prep_dict = direct_result
+        w = prep_dict["wave"]
+        np.testing.assert_allclose(res.dust_curve(w), fit_dict["mode2_dust"], atol=1e-12)
+        np.testing.assert_allclose(res.dust_curve(np.array([3000.0, 6000.0])), 1.0)
+
+    def test_dust_curve_none_falls_back_to_ones(self):
+        w = np.linspace(4000, 5000, 100)
+        fit_dict = {"ve": np.array([0.0, 0.0]), "vd": np.array([0.0, 0.0]),
+                    "ebv_m1": np.array([0.0, 0.0])}
+        prep_dict = {"wave": w, "flux_raw": np.ones(100),
+                     "error_raw": np.ones(100), "mask": np.ones(100)}
+        res = SpecFitResult(fit_dict, prep_dict)
+        np.testing.assert_allclose(res.dust_curve(w), 1.0)
+
+    def test_save_layout_and_roundtrip(self, direct_result, tmp_path):
+        res, fit_dict, prep_dict = direct_result
+        p = str(tmp_path / "direct.fits")
+        res.save(p)
+        from astropy.io import fits
+        with fits.open(p) as h:
+            assert [x.name for x in h] == ["PRIMARY", "WAVE", "FLUX", "ERROR",
+                                           "PARAMS", "BESTFIT", "DUST"]
+            colnames = list(h["PARAMS"].data.columns.names)
+        assert colnames == ["ve", "ve_err", "vd", "vd_err", "ebv_m1",
+                            "ebv_m1_err", "ebv_m2", "p1", "p2"]
+        loaded = read_specfit_fits(p)
+        np.testing.assert_array_equal(loaded["wave"], prep_dict["wave"])
+        np.testing.assert_array_equal(loaded["flux"], prep_dict["flux_raw"])
+        np.testing.assert_array_equal(loaded["bestfit"], fit_dict["mode1_model"])
+        np.testing.assert_array_equal(loaded["dust"], fit_dict["mode2_dust"])
+        assert loaded["params"]["ve"] == 30.0
+        assert loaded["params"]["p2"] == -0.003
+
+    def test_plots_write_png(self, direct_result, tmp_path):
+        res, _, _ = direct_result
+        p1 = str(tmp_path / "fit.png")
+        p2 = str(tmp_path / "dust.png")
+        res.plot_fit(p1)
+        res.plot_dust(p2)
+        assert os.path.exists(p1) and os.path.getsize(p1) > 1000
+        assert os.path.exists(p2) and os.path.getsize(p2) > 1000
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  SpecFit.fit
+# ═══════════════════════════════════════════════════════════════════
 
 class TestSpecFit:
     @requires_data
     def test_fit_mode2(self, pca_file, test_data):
-        sf = SpecFit(pca_file)
-        result = sf.fit(
-            wave=test_data["wave_obs"],
-            flux=test_data["flux_obs"],
-            error=test_data["error_obs"],
-            mask=test_data["mask_obs"],
-            z_sys=test_data["z"],
-            mode="mode2",
-        )
+        result = SpecFit(pca_file).fit(
+            wave=test_data["wave_obs"], flux=test_data["flux_obs"],
+            error=test_data["error_obs"], mask=test_data["mask_obs"],
+            z_sys=test_data["z"], mode="mode2")
         assert isinstance(result, SpecFitResult)
-        assert result.ve[0] > 0
-        assert result.vd[0] > 0
+        assert result.ve[0] > 0 and result.vd[0] > 0
         assert 0.0 <= result.ebv[0] <= 1.0
 
     @requires_data
     def test_fit_mode1(self, pca_file, test_data):
-        sf = SpecFit(pca_file)
-        result = sf.fit(
-            wave=test_data["wave_obs"],
-            flux=test_data["flux_obs"],
-            error=test_data["error_obs"],
-            mask=test_data["mask_obs"],
-            z_sys=test_data["z"],
-            mode="mode1",
-        )
-        assert result.ve[0] > 0
-        assert result.vd[0] > 0
+        result = SpecFit(pca_file).fit(
+            wave=test_data["wave_obs"], flux=test_data["flux_obs"],
+            error=test_data["error_obs"], mask=test_data["mask_obs"],
+            z_sys=test_data["z"], mode="mode1")
+        assert result.ve[0] > 0 and result.vd[0] > 0
 
     @requires_data
     def test_preprocessed_properties(self, specfit_result):
         assert specfit_result.wave_prep is not None
-        assert specfit_result.flux_prep is not None
-        assert specfit_result.error_prep is not None
         assert len(specfit_result.wave_prep) == len(specfit_result.flux_prep)
 
     @requires_data
     def test_dust_curve_callable(self, specfit_result):
         w = np.linspace(4000, 7000, 10)
-        d = specfit_result.dust_curve(w)
-        assert d.shape == (10,)
+        assert specfit_result.dust_curve(w).shape == (10,)
+
+
+class TestSpecFitFitKwargs:
+    @staticmethod
+    def _obs():
+        data, model = _synth.make_synthetic_obs()
+        return data
+
+    def test_missing_z_sys_raises(self, synth_pca_file):
+        data = self._obs()
+        with pytest.raises(ValueError, match="required"):
+            SpecFit(synth_pca_file).fit(wave=data["wave_obs"], flux=data["flux_obs"],
+                                        error=data["error_obs"])
+
+    def test_observed_fits_path_without_mask(self, synth_pca_file, tmp_path):
+        data = self._obs()
+        p = str(tmp_path / "obs.fits")
+        write_observed_fits(p, data["wave_obs"], data["flux_obs"],
+                            data["error_obs"], mask=None,
+                            header_kw={"REDSHIFT": data["z"]})
+        res = SpecFit(synth_pca_file).fit(observed_fits=p, mode="mode1")
+        assert isinstance(res, SpecFitResult)
+        assert np.isfinite(res.ve[0]) and np.isfinite(res.vd[0])
+        assert len(res.bestfit) == len(res.wave_prep)
+
+    def test_observed_fits_path_with_mask(self, synth_pca_file, tmp_path):
+        data = self._obs()
+        p = str(tmp_path / "obs.fits")
+        write_observed_fits(p, data["wave_obs"], data["flux_obs"],
+                            data["error_obs"],
+                            mask=np.ones(len(data["wave_obs"]), dtype=bool),
+                            header_kw={"REDSHIFT": data["z"]})
+        assert isinstance(SpecFit(synth_pca_file).fit(observed_fits=p, mode="mode1"),
+                          SpecFitResult)
+
+    def test_emission_mask_override(self, synth_pca_file):
+        data = self._obs()
+        res = SpecFit(synth_pca_file).fit(
+            wave=data["wave_obs"], flux=data["flux_obs"], error=data["error_obs"],
+            mask=data["mask_obs"], z_sys=data["z"], mode="mode1",
+            emission_mask=[(5000, 5100)])
+        w = res.wave_prep
+        m = res.mask_prep
+        inside = (w >= 5000) & (w <= 5100)
+        assert inside.sum() > 0 and np.all(m[inside] == 0)
+        i_ha = int(np.argmin(np.abs(w - 6560)))
+        assert m[i_ha] == 1
+
+    @pytest.mark.parametrize("neig", [5, 15])
+    def test_neig(self, synth_pca_file, neig):
+        data = self._obs()
+        res = SpecFit(synth_pca_file).fit(
+            wave=data["wave_obs"], flux=data["flux_obs"], error=data["error_obs"],
+            mask=data["mask_obs"], z_sys=data["z"], mode="mode1", neig=neig)
+        assert isinstance(res, SpecFitResult)
+        assert np.isfinite(res.ve[0]) and np.isfinite(res.vd[0])

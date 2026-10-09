@@ -12,8 +12,6 @@ import numpy as np
 
 from ..constants import C_LIGHT  # noqa: F401
 
-DLOGW = 0.0001  # log-wavelength spacing
-
 
 def calz_unred(wave, ebv):
     """

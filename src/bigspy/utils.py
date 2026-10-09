@@ -4,6 +4,33 @@ import numpy as np
 from scipy import interpolate
 
 
+def median_in_window(wave, flux, mask, window):
+    """Median flux within ``window`` over good pixels.
+
+    Falls back to the median over all good pixels when fewer than 5 pixels fall
+    inside the window.  Used to normalize spectra at 5500 A consistently across
+    the NumPy model builder and the JAX likelihood.
+
+    Parameters
+    ----------
+    wave, flux : array_like
+    mask : array_like of bool
+        Good-pixel mask.
+    window : tuple
+        ``(lo, hi)`` wavelength window.
+
+    Returns
+    -------
+    float
+    """
+    wave = np.asarray(wave, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+    mask = np.asarray(mask, dtype=bool)
+    inside = (wave >= window[0]) & (wave <= window[1]) & mask
+    return float(np.median(flux[inside]) if inside.sum() > 5
+                 else np.median(flux[mask]))
+
+
 def rebin(x, y, x0=None, dlogx=None):
     """Rebin spectrum to a new wavelength grid with flux conservation.
 

@@ -19,12 +19,9 @@ import os
 import lmfit
 import matplotlib
 
-# ── Constants ──────────────────────────────────────────────────
-C = 299792.458            # speed of light (km/s)
-DLOGW = 0.0001            # log-wavelength spacing of templates
-NEIG = 20                 # number of PCA components available
-FIT_NEIG = 10             # number of PCA components to use in fit
-WAVE_NORM = 5500.0        # normalization wavelength
+# ── Constants (shared with bigspy.constants) ───────────────────
+from .constants import (C_LIGHT as C, DLOGW, DLOGW_VEL, NEIG, FIT_NEIG,
+                        WAVE_NORM)
 
 # ── Emission-line masks for preprocessing ──────────────────────
 from .mask import EMISSION_LINES as _EM_DICT
@@ -34,15 +31,6 @@ _EM_LINES = list(_EM_DICT.values())
 # ═══════════════════════════════════════════════════════════════
 #  Utility functions
 # ═══════════════════════════════════════════════════════════════
-def air_to_vacuum_wave(lam):
-    """Convert air wavelengths (A) to vacuum."""
-    lam = np.asarray(lam, dtype=float)
-    sigma2 = (1e4 / lam) ** 2
-    fact = (1 + 6.4328e-5 + 2.94981e-2 / (146.0 - sigma2)
-            + 2.5540e-4 / (41.0 - sigma2))
-    return lam * fact
-
-
 def _gauss_kernel(sigma, x0=0.0):
     """Normalised Gaussian kernel (pixel units), as used by gauss_convolve."""
     khalfsz = round(4 * sigma + abs(x0) + 3)
@@ -153,7 +141,7 @@ def load_pca_templates(pca_file, n_comp=None):
     with fits.open(pca_file) as h:
         pca = h["pca_log"].data[:n_comp, :]
         wt = h["wave_log"].data
-    return pca, wt, (10 ** DLOGW - 1) * C
+    return pca, wt, DLOGW_VEL
 
 
 def load_test_spectrum(path):
@@ -255,32 +243,6 @@ def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400)):
 # ═══════════════════════════════════════════════════════════════
 #  Core fitting functions
 # ═══════════════════════════════════════════════════════════════
-def _fit_residual(params, flux, error, mask, temp_pca, wave_fit,
-                  vsys, velscale):
-    """
-    Compute weighted residual: (model - flux) * mask / error.
-    Model = linear PCA combo (*) Gauss-convolve (*) dust curve.
-    """
-    pv = params.valuesdict()
-    neig = temp_pca.shape[1]
-
-    # (a) Dust attenuation curve (redden the model)
-    curve = calz_unred(wave_fit, -pv["ebv"])
-
-    # (b) PCA linear combination
-    coeffs = np.array([pv[f"a{i}"] for i in range(neig)])
-    model = np.dot(temp_pca, coeffs)
-
-    # (c) Velocity convolution
-    model = gauss_convolve(model, pv["vd"] / velscale,
-                           (pv["ve"] + vsys) / velscale)
-
-    # (d) Apply dust
-    model *= curve
-
-    return (model - flux) * mask / error
-
-
 # ═══════════════════════════════════════════════════════════════
 #  Mode 1: Calzetti
 # ═══════════════════════════════════════════════════════════════
@@ -528,7 +490,7 @@ def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
                     mode2_dust, mode2_model, mode2_residual.
     """
     out = {}
-    velscale = (10 ** DLOGW - 1) * C
+    velscale = DLOGW_VEL
     res1 = run_mode1(prep["flux"], prep["error"], prep["mask"],
                      prep["temp_pca"], prep["wave"], prep["vsys"],
                      velscale, prep["sigma_dap"])
@@ -570,42 +532,6 @@ def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
             out["mode2_model"] = slr * m2_dust * prep["norm_f5500"]
             out["mode2_residual"] = prep["flux_raw"] - out["mode2_model"]
     return out
-
-
-# ═══════════════════════════════════════════════════════════════
-#  Output
-# ═══════════════════════════════════════════════════════════════
-def save_results(prep, fit, out_dir, prefix="fit_result"):
-    """Save fit results to a FITS file.
-
-    Parameters
-    ----------
-    prep : dict
-        Preprocessed data from preprocess_spectrum().
-    fit : dict
-        Fit results from fit_spectrum().
-    out_dir : str
-        Output directory path.
-    prefix : str
-        Filename prefix (extension .fits is added automatically).
-    """
-    path = os.path.join(out_dir, f"{prefix}.fits")
-    m2 = fit.get("mode2_result", {})
-    cols = [fits.Column(name=n, format="D", array=[v]) for n, v in zip(
-        ["ve", "ve_err", "vd", "vd_err", "ebv_m1", "ebv_m1_err",
-         "ebv_m2", "p1", "p2"],
-        [fit["ve"][0], fit["ve"][1], fit["vd"][0], fit["vd"][1],
-         fit["ebv_m1"][0], fit["ebv_m1"][1],
-         m2.get("ebv", 0), m2.get("p1", 0), m2.get("p2", 0)])]
-    hdul = fits.HDUList([
-        fits.PrimaryHDU(),
-        fits.ImageHDU(prep["wave"], name="WAVE"),
-        fits.ImageHDU(prep["flux_raw"], name="FLUX"),
-        fits.ImageHDU(prep["error_raw"], name="ERROR"),
-        fits.BinTableHDU.from_columns(cols, name="PARAMS"),
-    ])
-    hdul.writeto(path, overwrite=True)
-    print(f"  Saved: {path}")
 
 
 # ═══════════════════════════════════════════════════════════════

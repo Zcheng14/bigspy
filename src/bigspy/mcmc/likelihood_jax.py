@@ -1,25 +1,35 @@
-"""JAX-accelerated likelihood for bigspy MCMC.
+"""JAX likelihood for bigspy MCMC.
 
-Provides `compute_chi2_batch_jax` — a pure, JIT-compiled function that
-replaces `Likelihood.call_batch`.  All NumPy → JAX, Python loops → vmap.
+Provides the JIT-compiled batch chi-squared core
+(:func:`compute_chi2_batch_jax`) and the :class:`JAXLikelihood` wrapper used by
+the NSS sampler.  Sampling is JAX-only; there is no NumPy chi-squared
+implementation in the library.
 
-Usage:
-    from bigspy.mcmc.likelihood_jax import JAXLikelihood
-    like = JAXLikelihood(ssp, ...)         # pre-loads SSP, builds conv matrix
-    chi2 = like.call_batch(logZ_arr, sfh_params)  # JIT-compiled batch eval
+The likelihood maps physical parameters (log metallicity + SFH parameters) to a
+log-likelihood.  SFH weights are evaluated in JAX via
+``SFHClass.evaluate_batch_jax`` so the entire computation can be traced by
+blackjax.
+
+The interpolation from the SSP grid to the observed grid uses a plan of gather
+indices / weights precomputed once in ``__init__`` (both grids are fixed),
+matching the NumPy ``_LinearInterpPlan`` boundary behaviour (strictly
+out-of-range -> 0).
 """
 
 import numpy as np
 import jax.numpy as jnp
 from jax import jit, vmap
 
+from ..constants import DLOGW_VEL, NR_RANGE
+from ..utils import median_in_window
+
 
 # ═══════════════════════════════════════════════════════════════════
-#  Helper: build convolution kernel (run once in __init__)
+#  Helpers
 # ═══════════════════════════════════════════════════════════════════
 
 def _build_conv_kernel(sigma_pix):
-    """Pre-compute Gaussian convolution kernel (1D, ~30 elements)."""
+    """Pre-compute a normalised Gaussian convolution kernel (1D)."""
     if sigma_pix <= 0:
         return np.array([1.0])
     khalf = round(4 * sigma_pix + 3)
@@ -29,37 +39,54 @@ def _build_conv_kernel(sigma_pix):
     return kernel
 
 
-# ═══════════════════════════════════════════════════════════════════
-#  SFH weights computation (NumPy, calls SFH.evaluate_batch)
-# ═══════════════════════════════════════════════════════════════════
+def _build_interp_plan(x_src, x_new):
+    """Pre-compute the linear-interpolation gather plan for fixed grids.
 
-def _compute_sfh_weights(sfh_class, sfh_params_2d, time_grid, dt):
-    """Compute normalized SFH weights: (N, n_age)."""
-    sfr = sfh_class.evaluate_batch(time_grid, sfh_params_2d)  # (N, n_age)
-    w = sfr * dt[None, :]   # (N, n_age)
-    w_sum = w.sum(axis=1, keepdims=True)
-    w_sum = np.where(w_sum == 0, 1.0, w_sum)
-    return w / w_sum
+    Reproduces the NumPy ``_LinearInterpPlan`` for a fixed ``(x_src, x_new)``
+    pair: same index layout, same formula, and strictly out-of-range targets
+    are zeroed.
+
+    Returns
+    -------
+    lo : ndarray (n_new,), int
+        Lower source index for each target.
+    dx : ndarray (n_new,)
+        ``x_src[lo + 1] - x_src[lo]``.
+    dxo : ndarray (n_new,)
+        ``x_new - x_src[lo]``.
+    oob : ndarray (n_new,), bool
+        True where ``x_new`` lies strictly outside the source range.
+    """
+    x = np.asarray(x_src, dtype=float)
+    xo = np.asarray(x_new, dtype=float)
+    idx = np.clip(np.searchsorted(x, xo), 1, len(x) - 1)
+    lo = (idx - 1).astype(np.int32)
+    dx = (x[idx] - x[idx - 1]).astype(np.float64)
+    dxo = (xo - x[idx - 1]).astype(np.float64)
+    oob = (xo < x[0]) | (xo > x[-1])
+    return lo, dx, dxo, oob
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Core: JIT-compiled batch chi2 computation
+#  Core: JIT-compiled batch chi-squared
 # ═══════════════════════════════════════════════════════════════════
 
 @jit
 def compute_chi2_batch_jax(
     logZ_arr, sfh_weights, spec_3d, metal_log_grid,
-    conv_kernel, dust_curve, ssp_wave,
-    obs_wave, obs_flux, obs_err, obs_mask,
+    conv_kernel, dust_curve,
+    interp_lo, interp_dx, interp_dxo, interp_oob,
+    obs_flux, obs_err, obs_mask,
     nr_indices,
 ):
-    """JIT-compiled batch chi-squared computation.
+    """JIT-compiled batch chi-squared.
 
-    All inputs are JAX arrays.  No Python loops — fully traceable by JAX.
+    All inputs are JAX arrays; there are no Python loops.  ``sfh_weights`` are
+    the normalised SFH weights, shape ``(N, n_age)``.
     """
     N = logZ_arr.shape[0]
 
-    # ── 1. Metal interpolation ─────────────────────────────────
+    # ── 1. Metal interpolation ─────────────────────────────────────
     idx = jnp.clip(
         jnp.searchsorted(metal_log_grid, logZ_arr),
         1, len(metal_log_grid) - 1,
@@ -67,48 +94,49 @@ def compute_chi2_batch_jax(
     f = (logZ_arr - metal_log_grid[idx - 1]) / (
         metal_log_grid[idx] - metal_log_grid[idx - 1]
     )  # (N,)
-    f = jnp.clip(f, 0.0, 1.0)  # match NumPy edge-case handling
+    f = jnp.clip(f, 0.0, 1.0)
 
-    # Batch dot: precompute CSP for ALL 6 metals, then interpolate.
-    # This avoids materializing spec_3d[idx] which is (N, 196, 3129) — huge.
-    all_csp = jnp.einsum("na,maw->nmw", sfh_weights, spec_3d)  # (N, 6, n_wave)
+    # Compute the CSP for all metals, then interpolate (avoids materialising
+    # spec_3d[idx] which would be (N, n_age, n_wave)).
+    all_csp = jnp.einsum("na,maw->nmw", sfh_weights, spec_3d)  # (N, M, n_wave)
     N_range = jnp.arange(N)
-    csp_lo = all_csp[N_range, idx - 1, :]  # (N, n_wave)
-    csp_hi = all_csp[N_range, idx, :]      # (N, n_wave)
-    csp = (1.0 - f[:, None]) * csp_lo + f[:, None] * csp_hi  # (N, n_wave_ssp)
+    csp_lo = all_csp[N_range, idx - 1, :]
+    csp_hi = all_csp[N_range, idx, :]
+    csp = (1.0 - f[:, None]) * csp_lo + f[:, None] * csp_hi
 
-    # ── 2. Velocity broadening ─────────────────────────────────
+    # ── 2. Velocity broadening ─────────────────────────────────────
     csp = vmap(lambda s: jnp.convolve(s, conv_kernel, mode="same"))(csp)
 
-    # ── 3. Normalize at 5500 ────────────────────────────────────
-    csp_nr = csp[:, nr_indices]  # (N, n_nr) — integer indexing is JIT-safe
-    norms = jnp.median(csp_nr, axis=1)  # (N,)
+    # ── 3. Normalize at 5500 ────────────────────────────────────────
+    csp_nr = csp[:, nr_indices]
+    norms = jnp.median(csp_nr, axis=1)
     norms = jnp.where(norms == 0.0, 1.0, norms)
     csp = csp / norms[:, None]
 
-    # ── 4. Dust attenuation ─────────────────────────────────────
+    # ── 4. Dust attenuation ─────────────────────────────────────────
     csp = csp * dust_curve[None, :]
 
-    # ── 5. Interpolate to observed grid ─────────────────────────
-    # jnp.interp is 1D; vmap over the batch dimension
-    interp_fn = lambda single_csp: jnp.interp(obs_wave, ssp_wave, single_csp)
-    model = vmap(interp_fn)(csp)  # (N, n_obs)
+    # ── 5. Interpolate to the observed grid (precomputed gather + lerp) ──
+    c_lo = csp[:, interp_lo]
+    c_hi = csp[:, interp_lo + 1]
+    slope = (c_hi - c_lo) / interp_dx[None, :]
+    model = slope * interp_dxo[None, :] + c_lo
+    model = jnp.where(interp_oob[None, :], 0.0, model)
 
-    # ── 6. chi-squared ──────────────────────────────────────────
-    residuals2 = (model - obs_flux[None, :]) ** 2 / (obs_err[None, :] ** 2)  # (N, n_obs)
+    # ── 6. chi-squared ──────────────────────────────────────────────
+    residuals2 = (model - obs_flux[None, :]) ** 2 / (obs_err[None, :] ** 2)
     masked_res2 = jnp.where(obs_mask[None, :], residuals2, 0.0)
-    chi2 = jnp.sum(masked_res2, axis=1)  # (N,)
-    # Guard against NaN/Inf from extreme parameter values
+    chi2 = jnp.sum(masked_res2, axis=1)
     chi2 = jnp.where(jnp.isfinite(chi2), chi2, 1e30)
     return chi2
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  JAXLikelihood class — NumPy-compatible wrapper
+#  JAXLikelihood
 # ═══════════════════════════════════════════════════════════════════
 
 class JAXLikelihood:
-    """JAX-accelerated likelihood, API-compatible with `Likelihood`.
+    """JAX likelihood used by the NSS sampler.
 
     Parameters
     ----------
@@ -119,84 +147,87 @@ class JAXLikelihood:
     ve, vd : float
         Velocity shift / dispersion from SpecFit (km/s).
     dust : DustAttenuation
-        Dust curve from SpecFit mode2.
+        Dust curve from SpecFit mode 2.
     nr : tuple
         5500 normalization range.
     velscale : float
-        Velocity scale per pixel (km/s). Default from constants.
+        Velocity scale per pixel (km/s); default from constants.
     """
 
     def __init__(self, ssp, ow, oflux, oerr, omask, ve, vd, dust,
-                 nr=(5450, 5550), velscale=None):
-        from ..constants import DLOGW, C_LIGHT
-
+                 nr=NR_RANGE, velscale=None):
         if velscale is None:
-            velscale = (10 ** DLOGW - 1) * C_LIGHT
+            velscale = DLOGW_VEL
 
-        # ── Pre-compute everything that doesn't depend on parameters ──
+        # ── Constants that do not depend on parameters ─────────────
         sigma_pix = vd / velscale if vd > 0 else 0.0
         self._conv_kernel_jax = jnp.asarray(_build_conv_kernel(sigma_pix))
         self._dust_curve_jax = jnp.asarray(np.asarray(dust._curve, dtype=np.float64))
         self._spec_3d_jax = jnp.asarray(np.asarray(ssp._spec, dtype=np.float64))
-        self._ssp_wave_jax = jnp.asarray(np.asarray(ssp.wave, dtype=np.float64))
         self._metal_log_grid_jax = jnp.log10(
             jnp.asarray(np.asarray(ssp.metal, dtype=np.float64) / 0.02)
         )
-        self._time_grid = ssp.time
-        self._dt = ssp.dt
+        self._time_grid_jax = jnp.asarray(np.asarray(ssp.time, dtype=np.float64))
+        self._dt_jax = jnp.asarray(np.asarray(ssp.dt, dtype=np.float64))
 
-        # ── Normalize observed data ──
+        # ── Normalize observed data at 5500 ────────────────────────
         ow_arr = np.asarray(ow, float)
         of_arr = np.asarray(oflux, float)
         oe_arr = np.asarray(oerr, float)
         om_arr = np.asarray(omask, bool)
 
-        nr_mask = (ow_arr >= nr[0]) & (ow_arr <= nr[1]) & om_arr
-        n = float(np.median(of_arr[nr_mask]) if nr_mask.sum() > 5
-                   else np.median(of_arr[om_arr]))
+        n = median_in_window(ow_arr, of_arr, om_arr, nr)
 
-        self._obs_wave_jax = jnp.asarray(np.asarray(ow_arr, dtype=np.float64))
         self._obs_flux_jax = jnp.asarray(np.asarray(of_arr / n, dtype=np.float64))
-        self._obs_err_jax  = jnp.asarray(np.asarray(oe_arr / n, dtype=np.float64))
+        self._obs_err_jax = jnp.asarray(np.asarray(oe_arr / n, dtype=np.float64))
         self._obs_mask_jax = jnp.asarray(np.asarray(om_arr, dtype=bool))
         self.ndof = om_arr.sum() - 3
 
-        # Pre-compute 5500 normalization mask indices (JAX needs concrete indices)
-        nr_mask = (ssp.wave >= nr[0]) & (ssp.wave <= nr[1])
-        self._nr_indices = tuple(np.where(nr_mask)[0].tolist())  # for integer indexing
+        # ── Fixed SSP -> observed interpolation plan ───────────────
+        lo, dx, dxo, oob = _build_interp_plan(ssp.wave, ow_arr)
+        self._interp_lo_jax = jnp.asarray(lo)
+        self._interp_dx_jax = jnp.asarray(dx)
+        self._interp_dxo_jax = jnp.asarray(dxo)
+        self._interp_oob_jax = jnp.asarray(oob)
 
-    def call_batch(self, logZsun_arr, sfh_class, sfh_params_2d):
-        """Vectorized chi-squared — NumPy in, NumPy out.
+        # ── 5500 normalization mask indices ────────────────────────
+        nr_mask = (ssp.wave >= nr[0]) & (ssp.wave <= nr[1])
+        self._nr_indices = tuple(np.where(nr_mask)[0].tolist())
+
+    def loglike_batch(self, logZ_arr, sfh_params_2d, sfh_class):
+        """JAX log-likelihood for a batch of parameter sets.
 
         Parameters
         ----------
-        logZsun_arr : ndarray (N,)
+        logZ_arr : jax.Array, shape (N,)
+        sfh_params_2d : jax.Array, shape (N, n_sfh_params)
         sfh_class : type
-            SFH model class.
-        sfh_params_2d : ndarray (N, n_sfh_params)
+            SFH model class implementing ``evaluate_batch_jax``.
 
         Returns
         -------
-        chi2 : ndarray (N,)
+        loglike : jax.Array, shape (N,)
         """
-        # Compute SFH weights on CPU (SFH.evaluate is not JAX)
-        sfh_weights = _compute_sfh_weights(
-            sfh_class, sfh_params_2d, self._time_grid, self._dt
-        )
+        sfr = sfh_class.evaluate_batch_jax(self._time_grid_jax, sfh_params_2d)
+        w = sfr * self._dt_jax[None, :]
+        w_sum = jnp.sum(w, axis=1, keepdims=True)
+        w_sum = jnp.where(w_sum == 0.0, 1.0, w_sum)
+        w = w / w_sum
 
-        # JIT-compiled core
         chi2 = compute_chi2_batch_jax(
-            jnp.asarray(logZsun_arr),
-            jnp.asarray(sfh_weights),
+            logZ_arr,
+            w,
             self._spec_3d_jax,
             self._metal_log_grid_jax,
             self._conv_kernel_jax,
             self._dust_curve_jax,
-            self._ssp_wave_jax,
-            self._obs_wave_jax,
+            self._interp_lo_jax,
+            self._interp_dx_jax,
+            self._interp_dxo_jax,
+            self._interp_oob_jax,
             self._obs_flux_jax,
             self._obs_err_jax,
             self._obs_mask_jax,
             self._nr_indices,
         )
-        return np.asarray(chi2)
+        return -0.5 * chi2

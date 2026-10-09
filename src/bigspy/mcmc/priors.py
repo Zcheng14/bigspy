@@ -1,36 +1,37 @@
-"""Prior distributions for MCMC / nested-sampling parameter transforms.
+"""Prior distributions for nested-sampling parameter transforms.
 
-Defines an abstract Prior base class and four concrete implementations
-that map the unit hypercube [0, 1]^n to physical parameter space.
+Defines an abstract :class:`Prior` and four concrete implementations that map
+the unit hypercube [0, 1] to physical parameter space.
+
+Each prior provides two transforms:
+
+* ``transform(cube)``      -- NumPy version (tests, non-JAX callers).
+* ``transform_jax(cube)``  -- JAX-traceable version (used by the NSS sampler,
+  where the whole likelihood is JIT-compiled).
+
+Both operate on 1-D arrays of unit-cube coordinates and return 1-D arrays of
+physical values.
 """
 
 from abc import ABC, abstractmethod
 
 import numpy as np
+import jax.numpy as jnp
+from jax.scipy.special import ndtri
 from scipy.stats import norm
 
 
 class Prior(ABC):
-    """Abstract base class for prior transforms.
-
-    Each prior maps a unit-cube coordinate (or vector) to a physical
-    parameter value.
-    """
+    """Abstract base class for prior transforms."""
 
     @abstractmethod
     def transform(self, cube):
-        """Map unit-cube values to physical parameter values.
+        """Map unit-cube values (NumPy) to physical parameter values."""
+        ...
 
-        Parameters
-        ----------
-        cube : ndarray, shape (N,) or (N, 1)
-            Unit-cube coordinates.
-
-        Returns
-        -------
-        ndarray, shape (N,)
-            Physical parameter values.
-        """
+    @abstractmethod
+    def transform_jax(self, cube):
+        """Map unit-cube values (JAX) to physical parameter values."""
         ...
 
 
@@ -45,6 +46,10 @@ class UniformPrior(Prior):
         c = np.asarray(cube).ravel()
         return self.lo + c * (self.hi - self.lo)
 
+    def transform_jax(self, cube):
+        c = jnp.asarray(cube).ravel()
+        return self.lo + c * (self.hi - self.lo)
+
 
 class LogUniformPrior(Prior):
     """Log-uniform prior on [lo, hi] (i.e., uniform in log10 space)."""
@@ -57,11 +62,15 @@ class LogUniformPrior(Prior):
         c = np.asarray(cube).ravel()
         return 10.0 ** (self.lo + c * (self.hi - self.lo))
 
+    def transform_jax(self, cube):
+        c = jnp.asarray(cube).ravel()
+        return 10.0 ** (self.lo + c * (self.hi - self.lo))
+
 
 class GaussianPrior(Prior):
     """Gaussian prior with mean *mu* and standard deviation *sigma*.
 
-    Uses ``scipy.stats.norm.ppf`` to transform the unit cube.
+    Uses the inverse normal CDF (``scipy.stats.norm.ppf`` / ``ndtri``).
     """
 
     def __init__(self, mu, sigma):
@@ -72,9 +81,13 @@ class GaussianPrior(Prior):
         c = np.asarray(cube).ravel()
         return norm.ppf(c, loc=self.mu, scale=self.sigma)
 
+    def transform_jax(self, cube):
+        c = jnp.asarray(cube).ravel()
+        return self.mu + self.sigma * ndtri(c)
+
 
 class FixedPrior(Prior):
-    """Fixed-value prior -- always returns *value* regardless of cube."""
+    """Fixed-value prior -- always returns *value* regardless of the cube."""
 
     def __init__(self, value):
         self.value = float(value)
@@ -82,3 +95,7 @@ class FixedPrior(Prior):
     def transform(self, cube):
         c = np.asarray(cube).ravel()
         return np.full_like(c, self.value)
+
+    def transform_jax(self, cube):
+        c = jnp.asarray(cube).ravel()
+        return jnp.full_like(c, self.value)

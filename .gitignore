@@ -6,11 +6,9 @@ __pycache__/
 .pytest_cache/
 
 # Output
-out_notebook/
-# Example/benchmark run artifacts (reproducible; kept out of the repo)
-out/example_run.log
-out/benchmarks/
 *.ipynb_checkpoints/
+out/state_*/
+out/notebook/
 
 # IDE
 .vscode/
@@ -24,9 +22,14 @@ Thumbs.db
 
 # Data (large files)
 .sisyphus/
-out/chains_*/
-PLAN.md
 *.zip
 anaconda_projects/
+
+# Local-only notes / reference data (kept on disk, not tracked)
+CLAUDE.md
+PLAN.md
 PLAN_JAX.md
-out_manga_demo/
+PLAN_nss_migration.md
+tests/manga-8131-6102-28-28.pkl
+tests/manga-9195-3702-LOGCUBE.fits.gz
+tests/drpall-v3_1_1.fits

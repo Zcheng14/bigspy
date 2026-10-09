@@ -151,56 +151,6 @@ class ConstantSFH(SFHBase):
         return np.full(len(timegrid), self.value, dtype=float)
 
 
-class StubLikelihood:
-    """Analytic chi2 with a known optimum, for UltraNestSampler unit tests.
-
-    chi2(logZ, sfh_params) = ((logZ - logZ_true)/0.05)^2
-                           + ((sfh_params[:, 0] - t0_true)/0.2)^2
-    Records the last call for parameter-order assertions.
-    """
-
-    def __init__(self, t0_true=5.0, logZ_true=-1.0):
-        self.t0_true, self.logZ_true = t0_true, logZ_true
-        self.last_logZ = None
-        self.last_sfh_params = None
-
-    def call_batch(self, logZsun_arr, sfh_class, sfh_params_2d):
-        logZsun_arr = np.asarray(logZsun_arr, dtype=float)
-        sfh_params_2d = np.atleast_2d(np.asarray(sfh_params_2d, dtype=float))
-        self.last_logZ = logZsun_arr.copy()
-        self.last_sfh_params = sfh_params_2d.copy()
-        chi2 = ((logZsun_arr - self.logZ_true) / 0.05) ** 2
-        if sfh_params_2d.shape[1] >= 1:
-            chi2 = chi2 + ((sfh_params_2d[:, 0] - self.t0_true) / 0.2) ** 2
-        return chi2
-
-
-class StubSampler:
-    """Minimal UltraNestSampler stand-in for MCMCResult tests."""
-
-    def __init__(self, like=None, n_samples=200, seed=0):
-        from bigspy.mcmc.sfh import DelayedExponentialSFH
-        rng = np.random.RandomState(seed)
-        self.like = like if like is not None else StubLikelihood()
-        self.param_names = ["t0", "tau", "logZsun"]
-        self.sfh_class = DelayedExponentialSFH
-        self.result = {
-            "maximum_likelihood": {"point": np.array([5.0, 3.0, -1.0])},
-            "samples": np.column_stack([
-                rng.normal(5.0, 1.0, n_samples),
-                rng.normal(3.0, 0.5, n_samples),
-                rng.normal(-1.0, 0.3, n_samples),
-            ]),
-            "logz": -4.5,
-        }
-
-    def get_bestfit(self):
-        return self.result["maximum_likelihood"]["point"]
-
-    def get_posterior(self):
-        return self.result["samples"]
-
-
 class StubSpecFitResult:
     """Duck-typed SpecFitResult stand-in for MCMCFitter tests."""
 

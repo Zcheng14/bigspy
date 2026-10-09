@@ -7,7 +7,7 @@ name = "bigspy"
 version = "0.1.0"
 description = "Bayesian Inference of Galaxy Spectra — Python library for spectral fitting of galaxy spectra"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
     {name = "bigspy contributors"}
@@ -25,15 +25,13 @@ dependencies = [
     "scipy>=1.7",
     "astropy>=5.0",
     "lmfit>=1.0",
-    "ultranest>=3.6",
-    # UltraNest's default HDF5 point store imports h5py at runtime.
-    "h5py>=3.0",
     "matplotlib>=3.5",
     "corner>=2.2",
-    # JAX powers the default accelerated batch likelihood (MCMCFitter(use_jax=True));
-    # the fitter falls back to NumPy if JAX is unavailable.
+    # JAX powers the batch likelihood (the only sampling backend).
     "jax>=0.4",
     "jaxlib>=0.4",
+    # Nested Slice Sampling backend (blackjax.nss).
+    "blackjax>=1.5",
 ]
 
 [project.optional-dependencies]

@@ -1,76 +1,30 @@
 """CSPBuilder: Composite Stellar Population builder via SFH convolution."""
 
 import numpy as np
-from .ssp import SSPLibrary  # for type hints  # noqa: F401
+
+from .ssp import SSPLibrary  # noqa: F401  (for type hints)
 
 
 class CSPBuilder:
     def __init__(self, ssp):
         self.ssp = ssp
-        # Fixed for the lifetime of the builder — precomputed once.
+        # Fixed for the lifetime of the builder -- precomputed once.
         self._logZ_grid = np.log10(np.asarray(ssp.metal) / 0.02)
 
     def build(self, logZsun, sfh):
-        """Build CSP at log(Z/Z_sun)."""
-        logZ_grid = self._logZ_grid
-        logM = logZsun
-        if logM <= logZ_grid[0]:
-            return self._conv(0, sfh)
-        if logM >= logZ_grid[-1]:
-            return self._conv(len(logZ_grid) - 1, sfh)
-        i = np.searchsorted(logZ_grid, logM)
-        f = (logM - logZ_grid[i - 1]) / (logZ_grid[i] - logZ_grid[i - 1])
-        return (1 - f) * self._conv(i - 1, sfh) + f * self._conv(i, sfh)
+        """Build the CSP at ``log(Z/Z_sun)``.
 
-    def build_batch(self, logZsun_arr, sfh_params_2d, sfh_class):
-        """Build CSP for multiple parameter sets.
-
-        Parameters
-        ----------
-        logZsun_arr : ndarray, shape (N,)
-            log(Z/Z_sun) for each set.
-        sfh_params_2d : ndarray, shape (N, n_sfh_params)
-            SFH parameters for each set.
-        sfh_class : type
-            SFH model class.
-
-        Returns
-        -------
-        csp : ndarray, shape (N, n_wave)
+        The metallicity grid is small, so the two bracketing metallicities are
+        convolved and linearly interpolated in ``logZ`` (clamped outside).
         """
-        # Evaluate SFH for all parameter sets (classmethod)
-        sfr = sfh_class.evaluate_batch(self.ssp.time, sfh_params_2d)  # (N, n_age)
-        # sfr is (N, n_age), dt is (n_age,)
-        w = sfr * self.ssp.dt  # (N, n_age)
-        w = w / w.sum(axis=1, keepdims=True)
-
-        logZsun_arr = np.asarray(logZsun_arr)
         grid = self._logZ_grid
-        M = len(grid)
-        N = len(logZsun_arr)
-        n_wave = self.ssp.n_wave
-        if N == 0:
-            return np.zeros((N, n_wave))
-        if M == 1:
-            # Degenerate single-metallicity grid: everything clamps to it.
-            return w @ self.ssp._spec[0]
-
-        # Metal interpolation, vectorized: group samples by their metallicity
-        # bracket (loop over metals, not samples). Identical edge semantics
-        # to the former per-sample loop (clamping / exact grid points).
-        idx = np.clip(np.searchsorted(grid, logZsun_arr), 1, M - 1)
-        f = (logZsun_arr - grid[idx - 1]) / (grid[idx] - grid[idx - 1])
-        f = np.clip(f, 0.0, 1.0)
-        lo = np.zeros((N, n_wave))
-        hi = np.zeros((N, n_wave))
-        for m in range(M):
-            sel = (idx - 1) == m
-            if sel.any():
-                lo[sel] = w[sel] @ self.ssp._spec[m]
-            sel = idx == m
-            if sel.any():
-                hi[sel] = w[sel] @ self.ssp._spec[m]
-        return (1 - f)[:, None] * lo + f[:, None] * hi
+        if logZsun <= grid[0]:
+            return self._conv(0, sfh)
+        if logZsun >= grid[-1]:
+            return self._conv(len(grid) - 1, sfh)
+        i = np.searchsorted(grid, logZsun)
+        f = (logZsun - grid[i - 1]) / (grid[i] - grid[i - 1])
+        return (1 - f) * self._conv(i - 1, sfh) + f * self._conv(i, sfh)
 
     def _conv(self, mi, sfh):
         w = sfh.evaluate(self.ssp.time) * self.ssp.dt
