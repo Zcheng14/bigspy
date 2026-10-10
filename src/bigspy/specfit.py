@@ -471,7 +471,7 @@ def run_mode2(flux, error, mask, temp_pca, wave_fit, vsys, velscale,
 # ═══════════════════════════════════════════════════════════════
 #  Unified fit entry
 # ═══════════════════════════════════════════════════════════════
-def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
+def fit_spectrum(prep, pca_full, wave_temp, mode="sl"):
     """Run the full SpecFit pipeline on preprocessed data.
 
     Parameters
@@ -483,7 +483,8 @@ def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
     wave_temp : ndarray
         Template wavelength grid.
     mode : str
-        "both", "m1", or "sl". "both" runs Mode 1 and Mode 2.
+        "sl" (default) runs Mode 1 followed by the Mode-2 S/L fit;
+        "m1" runs Mode 1 only.
 
     Returns
     -------
@@ -492,6 +493,8 @@ def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
                     mode1_residual, mode2_dust, mode2_model,
                     mode2_residual.
     """
+    if mode not in ("m1", "sl"):
+        raise ValueError(f"Unknown mode {mode!r}: use 'm1' or 'sl'.")
     out = {}
     velscale = DLOGW_VEL
     res1 = run_mode1(prep["flux"], prep["error"], prep["mask"],
@@ -519,7 +522,7 @@ def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
     out["mode1_model"] = m1_intrinsic * m1_dust * prep["norm_f5500"]
     out["mode1_residual"] = prep["flux_raw"] - out["mode1_model"]
 
-    if mode in ("sl", "both"):
+    if mode == "sl":
         m2 = run_mode2(prep["flux"], prep["error"], prep["mask"],
                        prep["temp_pca"], prep["wave"], prep["vsys"],
                        velscale, out["ve"][0], out["vd"][0], res1,
@@ -732,7 +735,8 @@ class SpecFit:
         z_sys : float
             Systemic redshift.
         mode : str
-            "mode2" (default, S/L non-parametric dust) or "mode1" (Calzetti only).
+            "mode2" (default) runs the Mode-1 Calzetti fit followed by
+            the Mode-2 S/L dust fit; "mode1" runs Mode 1 only.
         emission_mask : list, optional
             Custom emission line regions as [(lo, hi), ...].
         neig : int, optional
@@ -781,10 +785,13 @@ class SpecFit:
             "sigma_dap": 100.0,
         }
 
-        # Accept both long and short mode names.
-        _mode_map = {"mode1": "m1", "mode2": "sl", "both": "both",
-                     "m1": "m1", "sl": "sl"}
-        fit_mode = _mode_map.get(mode, mode)
+        # Public mode names; internal short names are used downstream.
+        _mode_map = {"mode1": "m1", "mode2": "sl"}
+        if mode not in _mode_map:
+            raise ValueError(
+                f"Unknown mode {mode!r}: use 'mode1' (Calzetti only) or "
+                "'mode2' (Mode 1 + S/L dust).")
+        fit_mode = _mode_map[mode]
         pca_use = self._pca[:n_comp, :]
         prep = preprocess_spectrum(data, self._wave_temp, pca_use,
                                    emission_lines=emission_mask)

@@ -240,7 +240,7 @@ def synth_prep(synth_pca_file):
 @pytest.fixture(scope="module")
 def synth_fit(synth_prep):
     prep, pca, wave_temp, velscale, data = synth_prep
-    return fit_spectrum(prep, pca, wave_temp, mode="both")
+    return fit_spectrum(prep, pca, wave_temp, mode="sl")
 
 
 @pytest.fixture(scope="module")
@@ -536,6 +536,14 @@ class TestSpecFitFitKwargs:
         with pytest.raises(ValueError, match="required"):
             SpecFit(synth_pca_file).fit(wave=data["wave_obs"], flux=data["flux_obs"],
                                         error=data["error_obs"])
+
+    def test_unknown_mode_raises(self, synth_pca_file):
+        data = self._obs()
+        with pytest.raises(ValueError, match="Unknown mode"):
+            SpecFit(synth_pca_file).fit(
+                wave=data["wave_obs"], flux=data["flux_obs"],
+                error=data["error_obs"], mask=data["mask_obs"],
+                z_sys=data["z"], mode="both")   # legacy alias, removed
 
     def test_mode1_nonconvergence_warns(self, synth_pca_file, monkeypatch):
         import bigspy.specfit as sf_mod
