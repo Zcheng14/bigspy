@@ -1,8 +1,9 @@
-# bigspy — Bayesian Inference of Galaxy Spectra
+# bigspy — Bayesian Inference of Galaxy Spectra (Python)
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
 
-bigspy fits galaxy spectra in two stages:
+bigspy (**B**ayesian **I**nference of **G**alaxy **S**pectra, in **Py**thon)
+fits galaxy spectra in two stages:
 
 1. **SpecFit** — a PCA-template fit (via `lmfit` least squares) of the stellar
    kinematics ($v_e$, $v_d$) and the dust attenuation.
