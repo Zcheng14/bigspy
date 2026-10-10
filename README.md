@@ -1,32 +1,34 @@
-# bigspy — Bayesian Inference of Galaxy Spectra (Python)
+# bigspy — Bayesian Inference of Galaxy Spectra
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
 
-Two-stage spectral fitting of galaxy spectra:
+bigspy fits galaxy spectra in two stages:
 
-1. **SpecFit** — PCA fitting for stellar kinematics ($v_e$, $v_d$) and dust attenuation
-2. **MCMC** — Bayesian inference of stellar population parameters via blackjax Nested Slice Sampling
+1. **SpecFit** — a PCA-template fit (via `lmfit` least squares) of the stellar
+   kinematics ($v_e$, $v_d$) and the dust attenuation.
+2. **MCMC** — Bayesian inference of the star formation history (SFH) and
+   metallicity with Nested Slice Sampling (`blackjax.nss`), using a JAX-only
+   likelihood. The kinematics and dust curve from stage 1 are held fixed;
+   only the SFH parameters and `logZsun` are sampled.
 
 ## Installation
 
 ```bash
-# 1. Clone with git-lfs (required for large template & test data files)
+# 1. Clone with git-lfs (template & test data are LFS-tracked)
 git lfs install
 git lfs clone https://github.com/Zcheng14/bigspy.git
 
-# Or if already cloned without LFS:
+# Or, if already cloned without LFS:
 git lfs pull
 
-# 2. Create environment (requires Python >= 3.11 for blackjax)
-conda create -n bigspy python=3.11
-conda activate bigspy
-
-# 3. Install bigspy
+# 2. Install (Python >= 3.11)
 cd bigspy
 pip install -e .
 ```
 
-Requires Python ≥ 3.11. Dependencies (auto-installed): `numpy`, `scipy`, `astropy`, `lmfit`, `matplotlib`, `corner`, `jax`, `jaxlib`, `blackjax`.
+Dependencies (auto-installed): `numpy`, `scipy`, `astropy`, `lmfit`,
+`matplotlib`, `corner`, `jax`, `jaxlib`, `blackjax>=1.5`.
+For development: `pip install -e ".[dev]"` (adds `pytest`, `pytest-cov`).
 
 ## Quick Start
 
@@ -34,115 +36,107 @@ Requires Python ≥ 3.11. Dependencies (auto-installed): `numpy`, `scipy`, `astr
 from bigspy import SpecFit, MCMCFitter
 
 # ---- 1. SpecFit — kinematics + dust ----
-sf = SpecFit(pca_fits="template/BC03_Padova1994_chab_PCA_extend_new.fits")
-specfit = sf.fit(
-    wave=wave_obs,          # observed wavelength (Å)
-    flux=flux_obs,          # flux
-    error=error_obs,        # uncertainty
-    mask=mask_obs,          # bool, good pixels
-    z_sys=your_redshift,    # systemic redshift (user-supplied)
-    ebv_mw=ebv_mw,          # Galactic E(B-V) for MW extinction correction
-    mode="mode2",           # S/L non-parametric dust (default)
+specfit = SpecFit("template/BC03_Padova1994_chab_PCA_extend_new.fits").fit(
+    wave=wave_obs,        # observed-frame wavelength (Angstrom)
+    flux=flux_obs,        # flux
+    error=error_obs,      # 1-sigma uncertainty
+    mask=mask_obs,        # pixel mask, 1/True = good
+    z_sys=z,              # systemic redshift
+    ebv_mw=ebv_mw,        # Galactic foreground E(B-V) (default 0)
+    mode="mode2",         # default; see "Dust modes" below
 )
-print(f"v_e = {specfit.ve[0]:.1f} ± {specfit.ve[1]:.1f} km/s")
-print(f"v_d = {specfit.vd[0]:.1f} ± {specfit.vd[1]:.1f} km/s")
+print(f"v_e = {specfit.ve[0]:.1f} +/- {specfit.ve[1]:.1f} km/s")
+print(f"v_d = {specfit.vd[0]:.1f} +/- {specfit.vd[1]:.1f} km/s")
+print(f"E(B-V) = {specfit.ebv[0]:.3f}")
 
-# ---- 2. MCMC — stellar population inference (NSS) ----
+# ---- 2. MCMC — SFH + metallicity (NSS) ----
 mc = MCMCFitter(
     ssp_fits="template/SSP_BC03_Padova1994_chab.fits",
     specfit_result=specfit,
-    sfh_model="dpl",                  # "dpl" (default), "delayed", or custom SFHBase
-    wave_range=(3600, 7400),
-    # NSS controls (defaults): n_live=1000, num_delete=100, num_inner_steps=10
+    sfh_model="dpl",          # default; "delayed" or a custom SFHBase subclass
 )
-mcmc_result = mc.run(
-    n_live=1000,                      # live points
-    out_dir="out/state_galaxy",       # optional: saves state.npz for auditing
-    seed=0,
-)
+result = mc.run(n_live=1000, seed=0, out_dir="out/state_galaxy")
 
-best = mcmc_result.bestfit       # dict: {"tau": ..., "alpha": ..., "beta": ..., "logZsun": ...}
-post = mcmc_result.posterior     # (N, 4) ndarray
-print(f"Best fit: {best}")
-print(f"log Z    = {mcmc_result.log_evidence:.2f}")
+print(result.bestfit)          # {'tau': ..., 'alpha': ..., 'beta': ..., 'logZsun': ...}
+print(result.posterior.shape)  # (N, 4)
+print(f"log Z = {result.log_evidence:.2f}")
 ```
 
-## API Reference
+## How the two stages connect
 
-### SpecFit — kinematics + dust
+- `SpecFit.fit()` **always runs the Mode-1 fit** (Calzetti dust); `mode="mode2"`
+  (the default) *additionally* runs the Mode-2 S/L dust fit on top of it.
+- `MCMCFitter` holds the following fixed from the SpecFit result: the
+  preprocessed rest-frame spectrum, the kinematics (`ve`, `vd`), and the dust
+  curve. Only the SFH parameters and `logZsun` are sampled.
+- **Which dust curve is used**: the Mode-2 (S/L) curve when Mode 2 produced one
+  (`specfit.mode2_dust_ok is True`); otherwise the Mode-1 Calzetti curve with
+  the fitted `E(B-V)`. Both are 1 at the 5500 Å normalization wavelength.
 
-| Method / Property | Description |
-|-------------------|-------------|
-| `SpecFit(pca_fits)` | Load PCA templates from FITS |
-| `sf.fit(wave, flux, error, mask, z_sys, ebv_mw=0.0, mode="mode2", ...)` | Run fitting, return `SpecFitResult` |
-| `result.ve`, `result.vd` | Line-of-sight velocity & dispersion `(value, error)` in km/s |
-| `result.ebv` | E(B−V) colour excess `(value, error)` |
-| `result.p1`, `result.p2` | Mode 2 dust polynomial coefficients |
-| `result.wave_prep`, `result.flux_prep`, `result.error_prep`, `result.mask_prep` | Preprocessed spectrum arrays |
-| `result.dust_curve(wave)` | Callable dust attenuation factor (10^(−0.4 A_λ)) |
-| `result.save(path)` | Save to FITS |
-| `result.plot_fit(path)` | Fit spectrum + dust curve (A_λ − A_V, mag) |
-| `result.plot_dust(path)` | Standalone dust plot: S/L data (scatter) + polynomial fit (line) |
+### Conventions
 
-### Dust Modes
+- **Mask**: `1`/`True` = good pixel, everywhere (input `mask`, FITS `MASK`
+  HDU, `mask_prep`).
+- **Normalization**: spectra and models are normalized at 5500 Å; the dust
+  curves used by the MCMC are anchored to 1 there.
+- **Templates**: PCA/SSP templates live on a log-wavelength grid
+  (`DLOGW = 1e-4` dex, ≈ 6.9 km/s per pixel); velocity convolution is done in
+  pixel units.
+- **Reproducibility**: `mc.run(seed=...)` is deterministic for a fixed seed.
 
-| Mode | String | Description |
-|------|--------|-------------|
-| Mode 1 | `"mode1"` | Calzetti et al. (2000) attenuation curve, fits single parameter `E(B−V)` |
-| Mode 2 | `"mode2"` | S/L (Smooth/Line) non-parametric dust curve. Separates smooth stellar continuum from emission lines, fits quadratic polynomial `A_λ − A_V = p1·(x−xv) + p2·(x²−xv²)` where `x = 10⁴/λ`. Returns S/L data points (`_dust_data_wave`, `_dust_data_A`) plus polynomial fit parameters. (default) |
+## Dust modes (SpecFit)
 
-### SFH Models
+| Mode | What it does | Free parameters |
+|------|--------------|-----------------|
+| `"mode1"` | Calzetti+2000 attenuation curve | `E(B-V)` |
+| `"mode2"` (default) | S/L (smooth/line) separation; free-form dust curve `A(x) − A(x_v) = p1·(x−xv) + p2·(x²−xv²)`, `x = 10⁴/λ`, `xv = 10⁴/5500` | `p1`, `p2` |
 
-**Built-in (default)**: `DoublePowerLawSFH(tau, alpha, beta)`
+`SpecFitResult` also reports `mode1_success` (whether the Mode-1 fit
+converged) and `mode2_dust_ok` (whether Mode 2 produced a dust curve).
+
+## SFH models
+
+**`DoublePowerLawSFH(tau, alpha, beta)`** (default):
 
 ```
 SFR(t) = 1 / ( (t/τ)^α + (t/τ)^(−β) )
 ```
 
-where $t$ is cosmic time (0 = Big Bang, max = present). `tau` sets the turnover
-time, `alpha` the rising slope and `beta` the falling slope.
+`t` is the cosmic time since the Big Bang; `tau` is the turnover time,
+`alpha`/`beta` the rising/falling slopes. Default priors:
+`logZsun ~ U(−2.5, 0.5)`, `tau ~ LogU(0.1, 13)`, `alpha, beta ~ LogU(0.1, 1000)`.
 
-**Built-in**: `DelayedExponentialSFH(t0, tau)`
+**`DelayedExponentialSFH(t0, tau)`**: `SFR(t) = (t−t0)·exp(−(t−t0)/τ)` for
+`t > t0`, else 0. Default priors: `logZsun ~ U(−2.5, 0.5)`,
+`t0 ~ U(0.1, 13.5)`, `tau ~ LogU(0.1, 10)`.
 
-```
-SFR(t) = 0                         for t ≤ t₀
-SFR(t) = (t − t₀) · exp(−(t−t₀)/τ)  for t > t₀
-```
-
-where $t$ is cosmic time (0 = Big Bang, max = present).
-
-- `t0` — formation start time (Gyr after Big Bang). Smaller → earlier formation.
-- `tau` — decay timescale (Gyr). Larger → SFR declines more slowly.
-
-**Custom SFH** — subclass `SFHBase`. A model provides a NumPy `evaluate` (used for
-plotting / model building) and a JAX `evaluate_batch_jax` (required by the NSS
-sampler):
+**Custom SFH** — subclass `SFHBase`. The sampler JIT-compiles the whole
+likelihood, so a custom model must provide both a NumPy `evaluate` (plotting /
+model building) and a JAX `evaluate_batch_jax` (sampling):
 
 ```python
 import numpy as np
 import jax.numpy as jnp
+from bigspy import UniformPrior, LogUniformPrior
 from bigspy.mcmc.sfh import SFHBase
-from bigspy import LogUniformPrior, UniformPrior
 
 class MySFH(SFHBase):
     n_params = 2
     param_names = ["tau", "beta"]
-    default_priors = {
-        "tau":  LogUniformPrior(0.1, 10.0),
-        "beta": UniformPrior(0.0, 5.0),
-    }
+    default_priors = {"logZsun": UniformPrior(-2.5, 0.5),
+                      "tau":  LogUniformPrior(0.1, 10.0),
+                      "beta": UniformPrior(0.0, 5.0)}
 
     def __init__(self, tau, beta):
-        self.tau = float(tau)
-        self.beta = float(beta)
+        self.tau, self.beta = float(tau), float(beta)
 
-    def evaluate(self, timegrid):                    # NumPy
+    def evaluate(self, timegrid):                      # NumPy
         t = np.max(timegrid) - timegrid
         return t**self.beta * np.exp(-t / self.tau)
 
     @classmethod
-    def evaluate_batch_jax(cls, timegrid, params_2d):  # JAX (for sampling)
-        tau = params_2d[:, 0][:, None]
+    def evaluate_batch_jax(cls, timegrid, params_2d):  # JAX (required)
+        tau  = params_2d[:, 0][:, None]
         beta = params_2d[:, 1][:, None]
         t = jnp.max(timegrid) - timegrid
         return t[None, :]**beta * jnp.exp(-t[None, :] / tau)
@@ -151,83 +145,72 @@ mc = MCMCFitter(..., sfh_model=MySFH)
 ```
 
 Required interface: `n_params`, `param_names`, `default_priors`,
-`__init__(**params)`, `evaluate(timegrid)` (NumPy) and
-`evaluate_batch_jax(timegrid, params_2d)` (JAX). See `DelayedExponentialSFH` /
-`DoublePowerLawSFH` for examples.
+`__init__(**params)`, `evaluate(timegrid)`, `evaluate_batch_jax(timegrid,
+params_2d)`.
 
-### Priors
+## Priors
 
-| Class | Description |
-|-------|-------------|
+| Class | Meaning |
+|-------|---------|
 | `UniformPrior(lo, hi)` | Uniform on [lo, hi] |
-| `LogUniformPrior(lo, hi)` | Uniform in log₁₀ space |
-| `GaussianPrior(mu, sigma)` | Gaussian with mean μ, std σ |
-| `FixedPrior(value)` | Fixed value (parameter frozen) |
+| `LogUniformPrior(lo, hi)` | Uniform in log₁₀ |
+| `GaussianPrior(mu, sigma)` | Gaussian (μ, σ) |
+| `FixedPrior(value)` | Hold the parameter fixed |
 
-```python
-from bigspy import UniformPrior, LogUniformPrior, FixedPrior
+User priors passed to `mc.run(priors={...})` are merged over the model's
+`default_priors`. A `FixedPrior` removes the parameter from sampling: it is
+absent from `posterior` but **is** reported in `bestfit` (with its fixed
+value), so model spectra can always be rebuilt from `bestfit`.
 
-mc.run(
-    priors={
-        "logZsun": UniformPrior(-2.5, 0.5),
-        "t0":      UniformPrior(0.1, 13.5),
-        "tau":     FixedPrior(5.0),       # freeze τ = 5
-    },
-    ...
-)
-```
+## API reference
 
-### MCMCFitter — stellar population inference
+### `SpecFit` / `SpecFitResult`
 
-| Method / Property | Description |
-|-------------------|-------------|
-| `MCMCFitter(ssp_fits, specfit_result, sfh_model="dpl", ...)` | Set up the model (SSP + SpecFitResult + JAX likelihood) |
-| `mc.run(n_live=1000, num_delete=100, num_inner_steps=10, priors=..., seed=0, out_dir=None)` | Run blackjax NSS, return `MCMCResult` |
-| `result.bestfit` | Best-fit parameter dict |
-| `result.posterior` | Posterior samples `(N, n_params)` ndarray |
-| `result.log_evidence` | log(Z) model evidence |
-| `result.save_result(path)` | Save best-fit params + CSP spectrum to FITS |
-| `result.plot_corner(path)` | Corner plot |
-| `result.plot_bestfit(path)` | Best-fit CSP vs observed |
-| `result.plot_sfh(path)` | SFH with 68% CI |
+| Method / attribute | Description |
+|--------------------|-------------|
+| `SpecFit(pca_fits)` | Load PCA templates (`pca_log`/`wave_log` HDUs) |
+| `.fit(wave, flux, error, mask, z_sys, mode="mode2", emission_mask=None, neig=None, observed_fits=None, ebv_mw=0.0)` | Run the fit → `SpecFitResult` |
+| `.ve`, `.vd` | Velocity shift / dispersion, `(value, error)` in km/s |
+| `.ebv` | Mode-1 `E(B−V)`, `(value, error)` |
+| `.p1`, `.p2` | Mode-2 dust polynomial coefficients |
+| `.mode1_success` | Mode-1 convergence flag (`SpecFit.fit` warns on failure) |
+| `.mode2_dust_ok` | Whether Mode 2 produced a dust curve |
+| `.wave_prep` / `.flux_prep` / `.error_prep` / `.mask_prep` | Preprocessed rest-frame spectrum (consumed by `MCMCFitter`) |
+| `.dust_curve(wave)` | Fitted dust curve as a callable (1.0 outside the fitted range) |
+| `.save(path)` | FITS: `WAVE/FLUX/ERROR/PARAMS` (+ `BESTFIT`, `DUST`) |
+| `.plot_fit(path)` / `.plot_dust(path)` | Fit overview / dust-curve figure |
 
-### MCMC Result FITS Structure
+### `MCMCFitter` / `MCMCResult`
 
-`save_result()` writes a FITS file with these HDUs:
+| Method / attribute | Description |
+|--------------------|-------------|
+| `MCMCFitter(ssp_fits, specfit_result, sfh_model="dpl", wave_range=(3600, 7400), emission_mask=None)` | Build the model + JAX likelihood |
+| `.run(n_live=1000, num_delete=100, num_inner_steps=10, priors=None, seed=0, max_ncalls=None, out_dir=None)` | Run NSS → `MCMCResult`; `out_dir` also saves `state.npz` |
+| `.bestfit` | Max-likelihood parameter dict (includes fixed parameters) |
+| `.posterior` | Posterior samples, `(N, n_active_params)` |
+| `.log_evidence` | log Z |
+| `.bestfit_model()` | Best-fit CSP on the observed wavelength grid |
+| `.save_result(path)` | FITS: `BESTFIT/WAVE/FLUX/ERROR/MASK/CSP/CSP_OBS`, `LOGEVID` in header |
+| `.plot_corner(path)` / `.plot_bestfit(path)` / `.plot_sfh(path)` | Corner / best-fit CSP / SFH (68% CI) figures |
 
-| HDU | Content |
-|-----|---------|
-| `PRIMARY` | Header with `LOGEVID` (log evidence) |
-| `BESTFIT` | Parameter table (name, value) |
-| `WAVE` | Observed wavelength grid (rest frame) |
-| `FLUX` | Preprocessed flux |
-| `ERROR` | Preprocessed error |
-| `MASK` | Pixel mask (1 = good) |
-| `CSP` | Best-fit CSP on SSP wavelength grid |
-| `CSP_OBS` | Best-fit CSP interpolated to observed grid |
+Sampling defaults: `n_live=1000`, `num_delete=100`, `num_inner_steps=10`.
+Use `num_inner_steps >= 2 * n_params` for harder posteriors.
 
-## Sampling backend
-
-Sampling uses blackjax Nested Slice Sampling (`blackjax.nss`) with a JAX-only
-likelihood. Default controls: `n_live=1000`, `num_delete=100`,
-`num_inner_steps=10`. Increase `num_inner_steps` (to at least `2*dim`) for harder
-or more degenerate posteriors. A JAX-capable SFH (``evaluate_batch_jax``) is
-required; the NumPy model chain is used only for plotting and saving.
-
-```python
-mc = MCMCFitter(..., sfh_model="dpl")
-mc.run(n_live=1000, seed=0, out_dir="out/state")
-```
-
-## Running the Demo
+## Running the demo and tests
 
 ```bash
-python example/run_bigspy.py
+python example/run_bigspy.py     # full pipeline on a bundled MaNGA spectrum
+python -m pytest                 # test suite
 ```
 
-Runs the full pipeline (load data → SpecFit → NSS MCMC → figures) on the bundled
-MaNGA test spectrum, writing figures to `out/figs/`. The notebook
-`example/bigspy_demo.ipynb` covers the same workflow interactively.
+The demo writes figures/data to `out/`; the notebook
+`example/bigspy_demo.ipynb` covers the same workflow interactively (run
+Jupyter from the same Python environment where `bigspy` is installed, so the
+`python3` kernel can import it).
+
+Tests use synthetic data where possible; the tests that need the LFS-tracked
+reference data (templates, MaNGA pkl) are skipped automatically when those
+files are missing (run `git lfs pull` to fetch them).
 
 ## License
 
