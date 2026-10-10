@@ -10,6 +10,8 @@ from conftest import requires_data
 pytest.importorskip("jax")
 
 from bigspy import SpecFit, MCMCFitter  # noqa: E402
+import _synth  # noqa: E402
+from bigspy.mcmc.dust import DustAttenuation  # noqa: E402
 
 
 class TestEndToEnd:
@@ -72,3 +74,31 @@ class TestEndToEnd:
             assert res.bestfit["beta"] == 0.2
             assert res.posterior.shape[1] == 3   # tau, alpha, logZsun
             assert len(res.bestfit_model()) == len(res.model.obs_wave)
+
+
+class TestEndToEndSynth:
+    """Pipeline tests on synthetic data (no LFS reference data needed)."""
+
+    def test_mode1_result_feeds_mcmc_with_calzetti_dust(
+            self, synth_pca_file, synth_ssp_file):
+        """A Mode-1-only SpecFit result feeds the MCMC stage, which falls
+        back to the Mode-1 Calzetti dust curve."""
+        data, _ = _synth.make_synthetic_obs(ebv=0.15)
+        sf = SpecFit(synth_pca_file).fit(
+            wave=data["wave_obs"], flux=data["flux_obs"],
+            error=data["error_obs"], mask=data["mask_obs"],
+            z_sys=data["z"], mode="mode1")
+        assert sf.mode1_success is True
+        assert sf.mode2_dust_ok is False
+        assert abs(sf.ebv[0] - 0.15) < 0.05
+
+        mc = MCMCFitter(ssp_fits=synth_ssp_file, specfit_result=sf,
+                        sfh_model="delayed", wave_range=(3600, 7400))
+        expected = DustAttenuation.from_calzetti(mc.ssp.wave, sf.ebv[0])
+        np.testing.assert_allclose(mc._dust._curve, expected._curve,
+                                   rtol=1e-12)
+
+        res = mc.run(n_live=20, num_delete=10, num_inner_steps=4,
+                     max_ncalls=400)
+        assert {"t0", "tau", "logZsun"} <= set(res.bestfit)
+        assert np.all(np.isfinite(res.posterior))

@@ -279,6 +279,12 @@ class MCMCResult:
 class MCMCFitter:
     """Bayesian MCMC spectral fitting with Nested Slice Sampling.
 
+    The dust curve and kinematics are held fixed from the SpecFit stage;
+    only the SFH parameters and metallicity are sampled.  The dust curve
+    comes from the SpecFit Mode-2 result when available
+    (``specfit_result.mode2_dust_ok``), otherwise from the Mode-1
+    Calzetti E(B-V).
+
     Parameters
     ----------
     ssp_fits : str
@@ -311,7 +317,12 @@ class MCMCFitter:
 
         p1 = getattr(specfit_result, 'p1', 0.0)
         p2 = getattr(specfit_result, 'p2', 0.0)
-        self._dust = DustAttenuation.from_mode2(self.ssp.wave, p1, p2)
+        if getattr(specfit_result, 'mode2_dust_ok', True):
+            self._dust = DustAttenuation.from_mode2(self.ssp.wave, p1, p2)
+        else:
+            # Mode 2 produced no dust curve: use the Mode-1 Calzetti curve.
+            ebv = getattr(specfit_result, 'ebv', (0.0, 0.0))[0]
+            self._dust = DustAttenuation.from_calzetti(self.ssp.wave, ebv)
 
         ve = specfit_result.ve[0]
         vd = specfit_result.vd[0]

@@ -155,7 +155,8 @@ class StubSpecFitResult:
     """Duck-typed SpecFitResult stand-in for MCMCFitter tests."""
 
     def __init__(self, wave, flux=None, error=None, mask=None,
-                 ve=(10.0, 2.0), vd=(120.0, 8.0), p1=0.05, p2=-0.003):
+                 ve=(10.0, 2.0), vd=(120.0, 8.0), p1=0.05, p2=-0.003,
+                 ebv=(0.1, 0.01), mode2_dust_ok=True):
         rng = np.random.RandomState(7)
         self._wave = np.asarray(wave, dtype=float)
         if flux is None:
@@ -168,6 +169,8 @@ class StubSpecFitResult:
                       else np.asarray(mask, dtype=float))
         self.ve, self.vd = ve, vd
         self.p1, self.p2 = p1, p2
+        self.ebv = ebv
+        self.mode2_dust_ok = mode2_dust_ok
 
     @property
     def wave_prep(self):

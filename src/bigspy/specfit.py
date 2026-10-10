@@ -15,6 +15,7 @@ Two fitting modes:
 No emission-line fitting, no stellar-population decomposition.
 """
 import pickle
+import warnings
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 import astropy.io.fits as fits
@@ -192,14 +193,15 @@ def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400),
     wave_rest = data["wave_obs"] / (1.0 + z)
     mask_full = np.asarray(data["mask_obs"], dtype=float)  # 1 = good
     ok = ((wave_rest >= fit_range[0]) & (wave_rest <= fit_range[1])
-          & (mask_full == 1) & np.isfinite(err) & (err > 0))
+          & (mask_full == 1) & np.isfinite(flux)
+          & np.isfinite(err) & (err > 0))
     ok[:5] = False
     ok[-5:] = False
     if not ok.any():
         raise ValueError(
             f"No usable pixels in rest-frame range {fit_range}: check "
-            "the mask (convention: 1 = good pixel) and that the errors "
-            "are finite and positive.")
+            "the mask (convention: 1 = good pixel) and that the flux "
+            "is finite and the errors are finite and positive.")
     i0 = np.where(ok)[0][0]
     i1 = np.where(ok)[0][-1] + 1
     npix = i1 - i0
@@ -485,9 +487,10 @@ def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
 
     Returns
     -------
-    dict with keys: mode1_result, mode2_result, ve, vd, ebv_m1,
-                    chi2r_m1, mode1_dust, mode1_model, mode1_residual,
-                    mode2_dust, mode2_model, mode2_residual.
+    dict with keys: mode1_result, mode1_success, mode2_result, ve, vd,
+                    ebv_m1, chi2r_m1, mode1_dust, mode1_model,
+                    mode1_residual, mode2_dust, mode2_model,
+                    mode2_residual.
     """
     out = {}
     velscale = DLOGW_VEL
@@ -495,6 +498,7 @@ def fit_spectrum(prep, pca_full, wave_temp, mode="both"):
                      prep["temp_pca"], prep["wave"], prep["vsys"],
                      velscale, prep["sigma_dap"])
     out["mode1_result"] = res1
+    out["mode1_success"] = bool(res1.success)
     out["ve"] = np.array([res1.params["ve"].value,
                           res1.params["ve"].stderr or 0])
     out["vd"] = np.array([res1.params["vd"].value,
@@ -541,7 +545,10 @@ class SpecFitResult:
     """SpecFit results: kinematics, dust, and the preprocessed spectrum.
 
     The ``*_prep`` properties expose the rest-frame, MW-corrected,
-    trimmed spectrum that the MCMC stage consumes.
+    trimmed spectrum that the MCMC stage consumes.  ``mode1_success``
+    reports whether the Mode-1 lmfit fit converged; ``mode2_dust_ok``
+    reports whether Mode 2 produced a fitted dust curve (when False,
+    the MCMC stage falls back to the Mode-1 Calzetti curve).
     """
     def __init__(self, fit_dict, prep_dict):
         self._fit = fit_dict
@@ -549,6 +556,9 @@ class SpecFitResult:
         self.ve = (fit_dict["ve"][0], fit_dict["ve"][1])
         self.vd = (fit_dict["vd"][0], fit_dict["vd"][1])
         self.ebv = (fit_dict["ebv_m1"][0], fit_dict["ebv_m1"][1])
+        self.mode1_success = bool(fit_dict.get("mode1_success", True))
+        # "mode2_dust" is only set when Mode 2 fitted a non-zero curve.
+        self.mode2_dust_ok = fit_dict.get("mode2_dust") is not None
         m2 = fit_dict.get("mode2_result", {})
         self.p1 = m2.get("p1", 0.0)
         self.p2 = m2.get("p2", 0.0)
@@ -779,5 +789,8 @@ class SpecFit:
         prep = preprocess_spectrum(data, self._wave_temp, pca_use,
                                    emission_lines=emission_mask)
         fit = fit_spectrum(prep, pca_use, self._wave_temp, mode=fit_mode)
+        if not fit["mode1_success"]:
+            warnings.warn("SpecFit Mode-1 fit did not converge; "
+                          "ve/vd/ebv may be unreliable.", stacklevel=2)
 
         return SpecFitResult(fit, prep)

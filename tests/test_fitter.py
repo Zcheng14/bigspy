@@ -129,6 +129,20 @@ class TestMCMCFitter:
         stub_res = _synth.StubSpecFitResult(_synth.SSP_WAVE[::2])
         return MCMCFitter(synth_ssp_file, stub_res, sfh_model="delayed", **kwargs)
 
+    def test_dust_from_mode2_when_available(self, synth_ssp_file):
+        f = self._make(synth_ssp_file)
+        expected = DustAttenuation.from_mode2(f.ssp.wave, 0.05, -0.003)
+        np.testing.assert_allclose(f._dust._curve, expected._curve,
+                                   rtol=1e-12)
+
+    def test_dust_falls_back_to_mode1_calzetti(self, synth_ssp_file):
+        stub_res = _synth.StubSpecFitResult(
+            _synth.SSP_WAVE[::2], mode2_dust_ok=False, ebv=(0.15, 0.01))
+        f = MCMCFitter(synth_ssp_file, stub_res, sfh_model="delayed")
+        expected = DustAttenuation.from_calzetti(f.ssp.wave, 0.15)
+        np.testing.assert_allclose(f._dust._curve, expected._curve,
+                                   rtol=1e-12)
+
     def test_likelihood_and_model(self, synth_ssp_file):
         f = self._make(synth_ssp_file)
         assert isinstance(f.likelihood, JAXLikelihood)

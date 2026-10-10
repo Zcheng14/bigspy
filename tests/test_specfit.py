@@ -312,6 +312,14 @@ class TestPreprocessSynthetic:
         with pytest.raises(ValueError, match="usable pixels"):
             preprocess_spectrum(data_bad, wave_temp, pca)
 
+    def test_all_nan_flux_raises_clear_error(self, synth_pca_file):
+        pca, wave_temp, _ = load_pca_templates(synth_pca_file)
+        data, _ = _synth.make_synthetic_obs()
+        data_bad = dict(data)
+        data_bad["flux_obs"] = np.full(len(data["flux_obs"]), np.nan)
+        with pytest.raises(ValueError, match="usable pixels"):
+            preprocess_spectrum(data_bad, wave_temp, pca)
+
 
 class TestRunMode1Synthetic:
     def test_recovers_model(self, synth_prep, synth_fit):
@@ -437,6 +445,23 @@ class TestSpecFitResultDirect:
         res = SpecFitResult(fit_dict, prep_dict)
         np.testing.assert_allclose(res.dust_curve(w), 1.0)
 
+    def test_fit_status_flags(self, direct_result):
+        res, _, _ = direct_result
+        assert res.mode1_success is True   # default when not recorded
+        assert res.mode2_dust_ok is True   # direct_result has mode2_dust
+
+    def test_fit_status_flags_without_mode2(self):
+        w = np.linspace(4000, 5000, 100)
+        fit_dict = {"ve": np.array([0.0, 0.0]), "vd": np.array([0.0, 0.0]),
+                    "ebv_m1": np.array([0.1, 0.01]),
+                    "mode1_success": False,
+                    "mode1_dust": np.ones(100)}
+        prep_dict = {"wave": w, "flux_raw": np.ones(100),
+                     "error_raw": np.ones(100), "mask": np.ones(100)}
+        res = SpecFitResult(fit_dict, prep_dict)
+        assert res.mode1_success is False
+        assert res.mode2_dust_ok is False
+
     def test_save_layout_and_roundtrip(self, direct_result, tmp_path):
         res, fit_dict, prep_dict = direct_result
         p = str(tmp_path / "direct.fits")
@@ -511,6 +536,24 @@ class TestSpecFitFitKwargs:
         with pytest.raises(ValueError, match="required"):
             SpecFit(synth_pca_file).fit(wave=data["wave_obs"], flux=data["flux_obs"],
                                         error=data["error_obs"])
+
+    def test_mode1_nonconvergence_warns(self, synth_pca_file, monkeypatch):
+        import bigspy.specfit as sf_mod
+        data = self._obs()
+        real_run_mode1 = sf_mod.run_mode1
+
+        def forced_fail(*args, **kwargs):
+            r = real_run_mode1(*args, **kwargs)
+            r.success = False   # simulate a non-converged lmfit run
+            return r
+
+        monkeypatch.setattr(sf_mod, "run_mode1", forced_fail)
+        with pytest.warns(UserWarning, match="did not converge"):
+            res = SpecFit(synth_pca_file).fit(
+                wave=data["wave_obs"], flux=data["flux_obs"],
+                error=data["error_obs"], mask=data["mask_obs"],
+                z_sys=data["z"], mode="mode1")
+        assert res.mode1_success is False
 
     def test_observed_fits_path_without_mask(self, synth_pca_file, tmp_path):
         data = self._obs()
