@@ -7,6 +7,7 @@ Sampling is done with blackjax Nested Slice Sampling (``blackjax.nss``); see
 import os
 import numpy as np
 
+from ..constants import WAVE_NORM
 from .ssp import SSPLibrary
 from .dust import DustAttenuation
 from .model import ModelComponents
@@ -283,7 +284,7 @@ class MCMCFitter:
     only the SFH parameters and metallicity are sampled.  The dust curve
     comes from the SpecFit Mode-2 result when available
     (``specfit_result.mode2_dust_ok``), otherwise from the Mode-1
-    Calzetti E(B-V).
+    Calzetti E(B-V); both are 1 at the 5500 A normalization wavelength.
 
     Parameters
     ----------
@@ -320,9 +321,12 @@ class MCMCFitter:
         if getattr(specfit_result, 'mode2_dust_ok', True):
             self._dust = DustAttenuation.from_mode2(self.ssp.wave, p1, p2)
         else:
-            # Mode 2 produced no dust curve: use the Mode-1 Calzetti curve.
+            # Mode 2 produced no dust curve: use the Mode-1 Calzetti
+            # curve, anchored at the normalization wavelength (the Mode-2
+            # polynomial is anchored at 5500 A by construction).
             ebv = getattr(specfit_result, 'ebv', (0.0, 0.0))[0]
-            self._dust = DustAttenuation.from_calzetti(self.ssp.wave, ebv)
+            self._dust = DustAttenuation.from_calzetti(self.ssp.wave, ebv,
+                                                       anchor=WAVE_NORM)
 
         ve = specfit_result.ve[0]
         vd = specfit_result.vd[0]

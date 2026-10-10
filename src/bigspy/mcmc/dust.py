@@ -21,21 +21,30 @@ class DustAttenuation:
       "poly"     — A_lambda = p1*(x-x_v) + p2*(x**2 - x_v**2)
       "calzetti" — Calzetti+2000 with parameter ebv
 
-    Construct normally via __init__, or through the convenience
-    classmethods from_mode2 / from_calzetti.
+    With ``anchor`` (calzetti mode), the curve is pinned to 1 at that
+    wavelength: A is measured relative to A(anchor), preserving the
+    curve shape.  Construct normally via __init__, or through the
+    convenience classmethods from_mode2 / from_calzetti.
     """
 
-    def __init__(self, wave_grid, mode="poly", ebv=None, p1=None, p2=None):
+    def __init__(self, wave_grid, mode="poly", ebv=None, p1=None, p2=None,
+                 anchor=None):
         self.mode = mode
         self.wave_grid = np.asarray(wave_grid)
         self._ebv = ebv
         self._p1 = p1
         self._p2 = p2
-        self._curve = self._compute(wave_grid, mode, ebv=ebv, p1=p1, p2=p2)
+        self._anchor = anchor
+        self._curve = self._compute(wave_grid, mode, ebv=ebv, p1=p1, p2=p2,
+                                    anchor=anchor)
 
     @staticmethod
-    def _compute(wave, mode, ebv=None, p1=None, p2=None):
-        """Compute the attenuation curve (factor multiplying model flux)."""
+    def _compute(wave, mode, ebv=None, p1=None, p2=None, anchor=None):
+        """Compute the attenuation curve (factor multiplying model flux).
+
+        ``anchor`` (calzetti mode only): wavelength in Angstrom at which
+        the curve is pinned to 1.
+        """
         wave = np.asarray(wave, float)
         x = 10000.0 / wave
         xv = 10000.0 / 5500.0
@@ -44,6 +53,8 @@ class DustAttenuation:
             A = p1 * (x - xv) + p2 * (x ** 2 - xv ** 2)
         elif mode == "calzetti":
             A = calz_klam(wave) * ebv
+            if anchor is not None:
+                A = A - calz_klam(np.atleast_1d(float(anchor)))[0] * ebv
         else:
             raise ValueError(f"Unknown dust mode: {mode}")
 
@@ -73,6 +84,7 @@ class DustAttenuation:
                 ebv=getattr(self, "_ebv", None),
                 p1=getattr(self, "_p1", None),
                 p2=getattr(self, "_p2", None),
+                anchor=getattr(self, "_anchor", None),
             )
         else:
             c = self._curve
@@ -90,11 +102,16 @@ class DustAttenuation:
         return o
 
     @classmethod
-    def from_calzetti(cls, wg, ebv):
-        """Construct a Calzetti-mode instance from E(B-V)."""
+    def from_calzetti(cls, wg, ebv, anchor=None):
+        """Construct a Calzetti-mode instance from E(B-V).
+
+        With ``anchor`` (Angstrom), the curve is pinned to 1 at that
+        wavelength.
+        """
         o = cls.__new__(cls)
         o.mode = "calzetti"
         o._ebv = ebv
+        o._anchor = anchor
         o.wave_grid = np.asarray(wg)
-        o._curve = cls._compute(wg, "calzetti", ebv=ebv)
+        o._curve = cls._compute(wg, "calzetti", ebv=ebv, anchor=anchor)
         return o

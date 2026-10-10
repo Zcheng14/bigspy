@@ -139,9 +139,14 @@ class TestMCMCFitter:
         stub_res = _synth.StubSpecFitResult(
             _synth.SSP_WAVE[::2], mode2_dust_ok=False, ebv=(0.15, 0.01))
         f = MCMCFitter(synth_ssp_file, stub_res, sfh_model="delayed")
-        expected = DustAttenuation.from_calzetti(f.ssp.wave, 0.15)
+        expected = DustAttenuation.from_calzetti(f.ssp.wave, 0.15,
+                                                 anchor=5500.0)
         np.testing.assert_allclose(f._dust._curve, expected._curve,
                                    rtol=1e-12)
+        # Anchored: the curve is 1 at the 5500 A normalization wavelength.
+        i55 = np.argmin(np.abs(f.ssp.wave - 5500.0))
+        assert f.ssp.wave[i55] == 5500.0
+        assert f._dust._curve[i55] == pytest.approx(1.0, rel=1e-12)
 
     def test_likelihood_and_model(self, synth_ssp_file):
         f = self._make(synth_ssp_file)

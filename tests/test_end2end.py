@@ -94,7 +94,8 @@ class TestEndToEndSynth:
 
         mc = MCMCFitter(ssp_fits=synth_ssp_file, specfit_result=sf,
                         sfh_model="delayed", wave_range=(3600, 7400))
-        expected = DustAttenuation.from_calzetti(mc.ssp.wave, sf.ebv[0])
+        expected = DustAttenuation.from_calzetti(mc.ssp.wave, sf.ebv[0],
+                                                 anchor=5500.0)
         np.testing.assert_allclose(mc._dust._curve, expected._curve,
                                    rtol=1e-12)
 

@@ -242,6 +242,23 @@ class TestDustAttenuationCalzetti:
         np.testing.assert_allclose(curve, 10.0 ** (-0.4 * k * ebv), rtol=1e-12)
         np.testing.assert_allclose(curve, calz_attenuation(w, ebv), rtol=1e-12)
 
+    def test_from_calzetti_anchor(self):
+        w = np.linspace(4000.0, 8000.0, 201)   # 20 A pixels, contains 5500
+        ebv = 0.15
+        d = DustAttenuation.from_calzetti(w, ebv, anchor=5500.0)
+        raw = DustAttenuation.from_calzetti(w, ebv)
+        i55 = np.argmin(np.abs(w - 5500.0))
+        # Pinned to 1 at the anchor; identical to raw / raw(anchor).
+        assert d._curve[i55] == pytest.approx(1.0, rel=1e-12)
+        np.testing.assert_allclose(d._curve, raw._curve / raw._curve[i55],
+                                   rtol=1e-12)
+        # The recompute path (new wave grid) respects the anchor.
+        w2 = np.linspace(4500.0, 7500.0, 61)   # 50 A pixels, contains 5500
+        np.testing.assert_allclose(
+            d.apply(np.ones_like(w2), wave=w2),
+            calz_attenuation(w2, ebv) / calz_attenuation(5500.0, ebv),
+            rtol=1e-12)
+
     def test_unknown_mode_raises(self):
         with pytest.raises(ValueError, match="Unknown dust mode"):
             DustAttenuation(np.linspace(4000, 5000, 10), mode="wedge")
