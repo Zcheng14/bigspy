@@ -78,6 +78,9 @@ print(f"log Z = {result.log_evidence:.2f}")
 
 - **Mask**: `1`/`True` = good pixel, everywhere (input `mask`, FITS `MASK`
   HDU, `mask_prep`).
+- **Sky lines**: `SpecFit.fit(mask_sky=True)` (default) additionally masks
+  the [O I] 5577 night-sky line (±800 km/s, applied in the observed frame
+  via the redshift), whose subtraction residuals can contaminate the fit.
 - **Normalization**: spectra and models are normalized at 5500 Å; the dust
   curves used by the MCMC are anchored to 1 there.
 - **Templates**: PCA/SSP templates live on a log-wavelength grid
@@ -170,7 +173,7 @@ value), so model spectra can always be rebuilt from `bestfit`.
 | Method / attribute | Description |
 |--------------------|-------------|
 | `SpecFit(pca_fits)` | Load PCA templates (`pca_log`/`wave_log` HDUs) |
-| `.fit(wave, flux, error, mask, z_sys, mode="mode2", emission_mask=None, neig=None, observed_fits=None, ebv_mw=0.0)` | Run the fit → `SpecFitResult` |
+| `.fit(wave, flux, error, mask, z_sys, mode="mode2", emission_mask=None, neig=None, observed_fits=None, ebv_mw=0.0, mask_sky=True)` | Run the fit → `SpecFitResult` |
 | `.ve`, `.vd` | Velocity shift / dispersion, `(value, error)` in km/s |
 | `.ebv` | Mode-1 `E(B−V)`, `(value, error)` |
 | `.p1`, `.p2` | Mode-2 dust polynomial coefficients |

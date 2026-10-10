@@ -31,7 +31,7 @@ from .constants import (C_LIGHT as C, DLOGW, DLOGW_VEL, NEIG, FIT_NEIG,
 from .utils import calz_klam, calz_attenuation
 
 # ── Emission-line masks for preprocessing ──────────────────────
-from .mask import EMISSION_LINES as _EM_DICT
+from .mask import EMISSION_LINES as _EM_DICT, sky_line_windows
 _EM_LINES = list(_EM_DICT.values())
 
 
@@ -156,7 +156,7 @@ def load_test_spectrum(path):
 #  Preprocessing
 # ═══════════════════════════════════════════════════════════════
 def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400),
-                        emission_lines=None):
+                        emission_lines=None, mask_sky=True):
     """Preprocess an observed spectrum for PCA fitting.
 
     Steps:
@@ -180,6 +180,9 @@ def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400),
     emission_lines : list of (lo, hi), optional
         Emission-line regions to mask.  Defaults to the built-in
         ``mask.EMISSION_LINES`` table.
+    mask_sky : bool
+        Also mask night-sky line windows ([O I] 5577, shifted to the
+        rest frame; default True).
 
     Returns
     -------
@@ -217,6 +220,9 @@ def preprocess_spectrum(data, wave_temp, pca_all, fit_range=(3600, 7400),
     lines = _EM_LINES if emission_lines is None else emission_lines
     for lo, hi in lines:
         mf[(wf >= lo) & (wf <= hi)] = 0.0
+    if mask_sky:
+        for lo, hi in sky_line_windows(z):
+            mf[(wf >= lo) & (wf <= hi)] = 0.0
     i55 = np.argmin(np.abs(wf - 5500))
     norm_f5500 = ff[i55]
     ff_raw, ef_raw = ff.copy(), ef.copy()
@@ -722,7 +728,7 @@ class SpecFit:
 
     def fit(self, wave=None, flux=None, error=None, mask=None, z_sys=None,
             mode="mode2", emission_mask=None, neig=None, observed_fits=None,
-            ebv_mw=0.0):
+            ebv_mw=0.0, mask_sky=True):
         """Fit observed spectrum.
 
         Parameters
@@ -745,6 +751,8 @@ class SpecFit:
             Path to FITS file with WAVE/FLUX/ERROR extensions.
         ebv_mw : float, optional
             Galactic foreground E(B-V) for MW extinction correction (default 0).
+        mask_sky : bool, optional
+            Also mask the [O I] 5577 night-sky line (+/-800 km/s, default True).
 
         Returns
         -------
@@ -794,7 +802,8 @@ class SpecFit:
         fit_mode = _mode_map[mode]
         pca_use = self._pca[:n_comp, :]
         prep = preprocess_spectrum(data, self._wave_temp, pca_use,
-                                   emission_lines=emission_mask)
+                                   emission_lines=emission_mask,
+                                   mask_sky=mask_sky)
         fit = fit_spectrum(prep, pca_use, self._wave_temp, mode=fit_mode)
         if not fit["mode1_success"]:
             warnings.warn("SpecFit Mode-1 fit did not converge; "

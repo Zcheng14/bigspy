@@ -134,3 +134,38 @@ def mask_emlines_detailed(wave, mask_in, mask_add=None):
         mask_out[(wave >= lo) & (wave <= hi)] = False
 
     return mask_out, lines
+
+
+# ── Night-sky lines (air wavelengths, Angstrom) ───────────────────
+# Only the strongest optical sky line is masked (subtraction residuals
+# can be significant).  Sky lines sit at fixed OBSERVED wavelengths,
+# so the mask windows are redshift-dependent (see sky_line_windows).
+SKY_LINES_AIR = {"[OI] 5577": 5577.34}
+
+
+def sky_line_windows(z, width=800.0):
+    """Rest-frame wavelength windows around night-sky lines.
+
+    Parameters
+    ----------
+    z : float
+        Galaxy redshift; sky-line wavelengths are converted from air to
+        vacuum and shifted to the rest frame with (1 + z).
+    width : float
+        Half-width of each window in km/s (default 800).
+
+    Returns
+    -------
+    list of (lo, hi)
+        Rest-frame windows in Angstrom (vacuum).
+    """
+    from .constants import C_LIGHT
+    from .utils import air_to_vacuum_wave
+
+    windows = []
+    for lam_air in SKY_LINES_AIR.values():
+        lam_vac = float(air_to_vacuum_wave(lam_air))
+        half = lam_vac * width / C_LIGHT     # observed-frame half-width (A)
+        windows.append(((lam_vac - half) / (1.0 + z),
+                        (lam_vac + half) / (1.0 + z)))
+    return windows

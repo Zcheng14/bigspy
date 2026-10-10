@@ -320,6 +320,26 @@ class TestPreprocessSynthetic:
         with pytest.raises(ValueError, match="usable pixels"):
             preprocess_spectrum(data_bad, wave_temp, pca)
 
+    def test_mask_sky_masks_oi5577(self, synth_pca_file):
+        from bigspy.mask import sky_line_windows
+        pca, wave_temp, _ = load_pca_templates(synth_pca_file)
+        data, _ = _synth.make_synthetic_obs()   # z = 0.01
+        prep = preprocess_spectrum(data, wave_temp, pca)   # default: on
+        prep_off = preprocess_spectrum(data, wave_temp, pca, mask_sky=False)
+        # [OI] 5577.34 (air) -> 5578.9 (vac) -> rest ~5523.6 at z=0.01
+        lo, hi = sky_line_windows(data["z"])[0]
+        sky = (prep["wave"] >= lo - 1.0) & (prep["wave"] <= hi + 1.0)
+        assert sky.sum() > 0
+        assert np.all(prep["mask"][sky] == 0)
+        # Pixels newly masked by mask_sky all lie inside the sky window
+        # (part of it is already covered by EMISSION_LINES [5509, 5525]).
+        new_masked = (prep["mask"] == 0) & (prep_off["mask"] == 1)
+        assert new_masked.any()
+        assert np.all(sky[new_masked])
+        # Outside the sky window the two masks are identical.
+        np.testing.assert_array_equal(prep["mask"][~sky],
+                                      prep_off["mask"][~sky])
+
 
 class TestRunMode1Synthetic:
     def test_recovers_model(self, synth_prep, synth_fit):
@@ -620,6 +640,26 @@ class TestSpecFitFitKwargs:
         fit(15)
         r5b = fit(5)
         assert r5a.ve[0] == r5b.ve[0] and r5a.vd[0] == r5b.vd[0]
+
+    def test_mask_sky_switch_via_fit(self, synth_pca_file):
+        data = self._obs()
+        res_on = SpecFit(synth_pca_file).fit(
+            wave=data["wave_obs"], flux=data["flux_obs"],
+            error=data["error_obs"], mask=data["mask_obs"],
+            z_sys=data["z"], mode="mode1")                    # default: on
+        res_off = SpecFit(synth_pca_file).fit(
+            wave=data["wave_obs"], flux=data["flux_obs"],
+            error=data["error_obs"], mask=data["mask_obs"],
+            z_sys=data["z"], mode="mode1", mask_sky=False)
+        from bigspy.mask import sky_line_windows
+        w = res_on.wave_prep
+        lo, hi = sky_line_windows(data["z"])[0]
+        sky = (w >= lo - 1.0) & (w <= hi + 1.0)
+        assert sky.sum() > 0
+        assert np.all(res_on.mask_prep[sky] == 0)
+        new_masked = (res_on.mask_prep == 0) & (res_off.mask_prep == 1)
+        assert new_masked.any()
+        assert np.all(sky[new_masked])
 
     def test_emission_mask_not_sticky(self, synth_pca_file):
         """A custom emission_mask must not leak into later fits.
