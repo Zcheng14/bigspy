@@ -31,6 +31,16 @@ Dependencies (auto-installed): `numpy`, `scipy`, `astropy`, `lmfit`,
 `matplotlib`, `corner`, `jax`, `jaxlib`, `blackjax>=1.5`.
 For development: `pip install -e ".[dev]"` (adds `pytest`, `pytest-cov`).
 
+### GPU (optional)
+
+On CUDA GPUs, install JAX with the CUDA 12 extras and pin the cuDNN wheel:
+
+```bash
+pip install "jax[cuda12]" "nvidia-cudnn-cu12==9.10.2.21"
+```
+
+The cuDNN pin matters: some newer cuDNN wheels (e.g. 9.27) break the 1-D convolution used for velocity broadening with `CUDNN_STATUS_INTERNAL_ERROR` on some GPUs (observed on Tesla V100); 9.10.2.21 is verified to work with `jax[cuda12]==0.6.2`.
+
 ## Quick Start
 
 ```python
@@ -83,6 +93,7 @@ print(f"log Z = {result.log_evidence:.2f}")
   via the redshift), whose subtraction residuals can contaminate the fit.
 - **Normalization**: spectra and models are normalized at 5500 Å; the dust
   curves used by the MCMC are anchored to 1 there.
+- **Precision**: all JAX-side computation (likelihood, sampling, evidence) runs in float32 — JAX's default `x64=False` — and float64 inputs are silently cast down when converted to JAX arrays. This bounds the run-to-run / backend-to-backend reproducibility of `log_evidence` to the |ΔlogZ| ~ 0.01 level. True float64 requires enabling JAX's x64 mode (`jax.config.update("jax_enable_x64", True)`) before any JAX array is created; that mode is slower on GPU and is not exercised by the test suite.
 - **Templates**: PCA/SSP templates live on a log-wavelength grid
   (`DLOGW = 1e-4` dex, ≈ 6.9 km/s per pixel); velocity convolution is done in
   pixel units.
@@ -189,7 +200,7 @@ value), so model spectra can always be rebuilt from `bestfit`.
 | Method / attribute | Description |
 |--------------------|-------------|
 | `MCMCFitter(ssp_fits, specfit_result, sfh_model="dpl", wave_range=(3600, 7400), emission_mask=None)` | Build the model + JAX likelihood |
-| `.run(n_live=1000, num_delete=100, num_inner_steps=10, priors=None, seed=0, max_ncalls=None, out_dir=None)` | Run NSS → `MCMCResult`; `out_dir` also saves `state.npz` |
+| `.run(n_live=1000, num_delete=100, num_inner_steps=10, priors=None, seed=0, max_ncalls=None, delta_logz=3.0, out_dir=None)` | Run NSS → `MCMCResult`; `out_dir` also saves `state.npz` |
 | `.bestfit` | Max-likelihood parameter dict (includes fixed parameters) |
 | `.posterior` | Posterior samples, `(N, n_active_params)` |
 | `.log_evidence` | log Z |
@@ -198,6 +209,7 @@ value), so model spectra can always be rebuilt from `bestfit`.
 | `.plot_corner(path)` / `.plot_bestfit(path)` / `.plot_sfh(path)` | Corner / best-fit CSP / SFH (68% CI) figures |
 
 Sampling defaults: `n_live=1000`, `num_delete=100`, `num_inner_steps=10`.
+Termination: sampling stops when the evidence remaining in the live points drops below `exp(-delta_logz)` (default `delta_logz=3.0`, ≈ 5%) of the accumulated evidence, or when `max_ncalls` dead points have been produced (if set).
 Use `num_inner_steps >= 2 * n_params` for harder posteriors.
 
 ## Running the demo and tests
