@@ -116,6 +116,19 @@ class TestRun:
         b = _sampler(jlike, tmp_path).run(max_ncalls=400, seed=0)
         np.testing.assert_array_equal(a.get_bestfit(), b.get_bestfit())
 
+    def test_delta_logz_controls_termination(self, jlike, tmp_path):
+        # Loose threshold never fires: only the max_ncalls cap stops the run
+        # (400 dead points + the 20 finalised live points).
+        s = _sampler(jlike, tmp_path, "delayed")
+        s.run(max_ncalls=400, seed=0, delta_logz=1e6)
+        assert s.result["ncall"] == 420
+        # Strict threshold fires at least as early as the default (-3.0,
+        # which stops this problem at ncall=70): the shared seed produces the
+        # same state sequence, and gap < -3.0 implies gap < -0.01.
+        s2 = _sampler(jlike, tmp_path, "delayed")
+        s2.run(max_ncalls=4000, seed=0, delta_logz=0.01)
+        assert s2.result["ncall"] <= 70
+
     def test_save_and_load_state(self, jlike, tmp_path):
         from bigspy.mcmc.sampler import load_state
         s = _sampler(jlike, tmp_path, "delayed")

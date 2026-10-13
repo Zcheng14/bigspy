@@ -155,7 +155,7 @@ class NSSampler:
         return jnp.where(inside, jnp.asarray(0.0), jnp.asarray(-jnp.inf))
 
     # ── run ────────────────────────────────────────────────────────
-    def run(self, max_ncalls=None, seed=0):
+    def run(self, max_ncalls=None, seed=0, delta_logz=3.0):
         """Run Nested Slice Sampling.
 
         Parameters
@@ -164,6 +164,11 @@ class NSSampler:
             Soft cap on the number of dead points.
         seed : int
             PRNG seed.
+        delta_logz : float
+            Termination threshold on the remaining evidence: sampling stops
+            when ``logZ_live - logZ < -delta_logz``, i.e. when the live
+            points hold less than ``exp(-delta_logz)`` (~5% at the default
+            3.0) of the evidence accumulated so far.
 
         The number of live points, deletion and inner steps are set on the
         sampler (``self.n_live`` / ``self.num_delete`` /
@@ -194,7 +199,8 @@ class NSSampler:
 
         dead = []
         n_dead = 0
-        while bool(live.integrator.logZ_live - live.integrator.logZ >= -3.0):
+        while bool(live.integrator.logZ_live - live.integrator.logZ
+                   >= -float(delta_logz)):
             key, sub = jax.random.split(key)
             live, info = step_fn(sub, live)
             dead.append(info)

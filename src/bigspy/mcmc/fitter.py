@@ -343,7 +343,8 @@ class MCMCFitter:
 
     def run(self, n_live=DEFAULT_N_LIVE, num_delete=DEFAULT_NUM_DELETE,
             num_inner_steps=DEFAULT_NUM_INNER_STEPS,
-            priors=None, seed=0, max_ncalls=None, out_dir=None):
+            priors=None, seed=0, max_ncalls=None, delta_logz=3.0,
+            out_dir=None):
         """Run Nested Slice Sampling.
 
         Parameters
@@ -361,6 +362,10 @@ class MCMCFitter:
             PRNG seed (the run is deterministic for a fixed seed).
         max_ncalls : int, optional
             Soft cap on dead points.
+        delta_logz : float
+            Termination threshold on the remaining evidence: sampling stops
+            when ``logZ_live - logZ < -delta_logz`` (default 3.0, i.e. the
+            live points hold < ~5% of the accumulated evidence).
         out_dir : str, optional
             If given, save the finalised sampling state (positions,
             log-likelihoods, configuration, best-fit, posterior) to
@@ -371,7 +376,7 @@ class MCMCFitter:
             n_live=n_live, num_delete=num_delete,
             num_inner_steps=num_inner_steps,
         )
-        sampler.run(max_ncalls=max_ncalls, seed=seed)
+        sampler.run(max_ncalls=max_ncalls, seed=seed, delta_logz=delta_logz)
 
         if out_dir is not None:
             sampler.save_state(os.path.join(out_dir, "state.npz"))

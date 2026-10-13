@@ -167,6 +167,12 @@ class TestMCMCFitter:
         res = f.run(n_live=20, num_delete=10, num_inner_steps=4, max_ncalls=400)
         assert isinstance(res, MCMCResult)
 
+    def test_run_forwards_delta_logz(self, synth_ssp_file):
+        f = self._make(synth_ssp_file)
+        res = f.run(n_live=20, num_delete=10, num_inner_steps=4,
+                    max_ncalls=400, delta_logz=1e6)
+        assert res.result["ncall"] == 420   # cap-bound: 400 dead + 20 live
+
     def test_run_returns_result(self, synth_ssp_file, tmp_path):
         f = self._make(synth_ssp_file)
         res = f.run(out_dir=str(tmp_path / "state"), n_live=20,
