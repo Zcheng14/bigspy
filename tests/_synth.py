@@ -105,12 +105,12 @@ def make_synthetic_obs(noise=0.002, seed=42, ebv=0.0):
     """Build a synthetic observed spectrum + matching data dict for preprocess.
 
     Truth: flat-ish Legendre-PCA combo (first 10 comps), no broadening,
-    z=0.01, all pixels good (mask 0 = good convention). With ``ebv != 0``
+    z=0.01, all pixels good (mask 1 = good convention). With ``ebv != 0``
     the rest-frame truth is reddened by Calzetti E(B-V)=ebv (flux and
     error scaled by the same curve so SNR is wavelength-independent).
     Returns (data_dict, model_rest_frame_on_the_log_grid).
     """
-    from bigspy.specfit import calz_unred
+    from bigspy.utils import calz_attenuation
 
     rng = np.random.RandomState(seed)
     rows = pca_rows()
@@ -122,7 +122,7 @@ def make_synthetic_obs(noise=0.002, seed=42, ebv=0.0):
         flux_obs = model + rng.normal(0.0, noise, N_WAVE_LOG)
         error_obs = np.full(N_WAVE_LOG, noise)
     else:
-        curve = calz_unred(PCA_WAVE_LOG, -ebv)     # redden (dim) the truth
+        curve = calz_attenuation(PCA_WAVE_LOG, ebv)  # redden (dim) the truth
         flux_obs = model * curve + rng.normal(0.0, noise, N_WAVE_LOG) * curve
         error_obs = np.full(N_WAVE_LOG, noise) * curve
     data = {
@@ -130,7 +130,7 @@ def make_synthetic_obs(noise=0.002, seed=42, ebv=0.0):
         "ebv_mw": 0.0,
         "wave_obs": PCA_WAVE_LOG * (1.0 + SYN_Z),
         "flux_obs": flux_obs,
-        "mask_obs": np.zeros(N_WAVE_LOG),          # 0 = good
+        "mask_obs": np.ones(N_WAVE_LOG),           # 1 = good
         "error_obs": error_obs,
         "sigma_dap": 100.0,
     }
@@ -151,61 +151,12 @@ class ConstantSFH(SFHBase):
         return np.full(len(timegrid), self.value, dtype=float)
 
 
-class StubLikelihood:
-    """Analytic chi2 with a known optimum, for UltraNestSampler unit tests.
-
-    chi2(logZ, sfh_params) = ((logZ - logZ_true)/0.05)^2
-                           + ((sfh_params[:, 0] - t0_true)/0.2)^2
-    Records the last call for parameter-order assertions.
-    """
-
-    def __init__(self, t0_true=5.0, logZ_true=-1.0):
-        self.t0_true, self.logZ_true = t0_true, logZ_true
-        self.last_logZ = None
-        self.last_sfh_params = None
-
-    def call_batch(self, logZsun_arr, sfh_class, sfh_params_2d):
-        logZsun_arr = np.asarray(logZsun_arr, dtype=float)
-        sfh_params_2d = np.atleast_2d(np.asarray(sfh_params_2d, dtype=float))
-        self.last_logZ = logZsun_arr.copy()
-        self.last_sfh_params = sfh_params_2d.copy()
-        chi2 = ((logZsun_arr - self.logZ_true) / 0.05) ** 2
-        if sfh_params_2d.shape[1] >= 1:
-            chi2 = chi2 + ((sfh_params_2d[:, 0] - self.t0_true) / 0.2) ** 2
-        return chi2
-
-
-class StubSampler:
-    """Minimal UltraNestSampler stand-in for MCMCResult tests."""
-
-    def __init__(self, like=None, n_samples=200, seed=0):
-        from bigspy.mcmc.sfh import DelayedExponentialSFH
-        rng = np.random.RandomState(seed)
-        self.like = like if like is not None else StubLikelihood()
-        self.param_names = ["t0", "tau", "logZsun"]
-        self.sfh_class = DelayedExponentialSFH
-        self.result = {
-            "maximum_likelihood": {"point": np.array([5.0, 3.0, -1.0])},
-            "samples": np.column_stack([
-                rng.normal(5.0, 1.0, n_samples),
-                rng.normal(3.0, 0.5, n_samples),
-                rng.normal(-1.0, 0.3, n_samples),
-            ]),
-            "logz": -4.5,
-        }
-
-    def get_bestfit(self):
-        return self.result["maximum_likelihood"]["point"]
-
-    def get_posterior(self):
-        return self.result["samples"]
-
-
 class StubSpecFitResult:
     """Duck-typed SpecFitResult stand-in for MCMCFitter tests."""
 
     def __init__(self, wave, flux=None, error=None, mask=None,
-                 ve=(10.0, 2.0), vd=(120.0, 8.0), p1=0.05, p2=-0.003):
+                 ve=(10.0, 2.0), vd=(120.0, 8.0), p1=0.05, p2=-0.003,
+                 ebv=(0.1, 0.01), mode2_dust_ok=True):
         rng = np.random.RandomState(7)
         self._wave = np.asarray(wave, dtype=float)
         if flux is None:
@@ -218,6 +169,8 @@ class StubSpecFitResult:
                       else np.asarray(mask, dtype=float))
         self.ve, self.vd = ve, vd
         self.p1, self.p2 = p1, p2
+        self.ebv = ebv
+        self.mode2_dust_ok = mode2_dust_ok
 
     @property
     def wave_prep(self):

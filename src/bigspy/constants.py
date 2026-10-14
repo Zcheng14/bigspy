@@ -17,3 +17,6 @@ FIT_NEIG = 10
 
 # Normalization wavelength (Angstrom)
 WAVE_NORM = 5500.0
+
+# Default wavelength window used to normalize spectra at 5500 A
+NR_RANGE = (5450, 5550)

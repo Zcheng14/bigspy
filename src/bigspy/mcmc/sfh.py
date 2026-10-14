@@ -1,26 +1,29 @@
 """Star Formation History (SFH) models.
 
-Provides an abstract base class SFHBase and the DelayedExponentialSFH
-implementation for use in CSP (Composite Stellar Population) building.
+Provides the abstract :class:`SFHBase` and the built-in
+:class:`DelayedExponentialSFH` / :class:`DoublePowerLawSFH` models.
+
+Each model implements two evaluations:
+
+* ``evaluate(timegrid)``      -- NumPy, used for plotting and model building.
+* ``evaluate_batch_jax(...)`` -- JAX-traceable batch evaluation, required for
+  NSS sampling (the whole likelihood is JIT-compiled by blackjax).
 """
 
 from abc import ABC, abstractmethod
 
 import numpy as np
+import jax.numpy as jnp
 
 
 class SFHBase(ABC):
     """Abstract base class for star formation history models.
 
-    Subclasses must implement:
-        - n_params  (int): number of free parameters (class attribute)
-        - param_names (list[str]): parameter name strings (class attribute)
-        - evaluate(self, timegrid): compute SFR on the given time grid
+    Subclasses must provide the class attributes
+    ``n_params`` / ``param_names`` / ``default_priors`` and implement both
 
-    Class attributes:
-        default_priors (dict): parameter name -> Prior object
-        n_params (int): required on subclasses
-        param_names (list[str]): required on subclasses
+    * ``evaluate(self, timegrid)`` -- NumPy SFR (plotting / model building), and
+    * ``evaluate_batch_jax(timegrid, params_2d)`` -- JAX SFR (NSS sampling).
     """
 
     n_params = 0
@@ -28,16 +31,12 @@ class SFHBase(ABC):
     default_priors = {}
 
     def __init__(self, **params):
-        """Store model parameters.
-
-        Concrete subclasses may call ``super().__init__(**kwargs)``
-        or set attributes directly.
-        """
+        """Store model parameters (subclasses usually set attributes directly)."""
         pass
 
     @abstractmethod
     def evaluate(self, timegrid):
-        """Compute SFR on *timegrid*.
+        """Compute SFR on *timegrid* (NumPy).
 
         Parameters
         ----------
@@ -51,35 +50,35 @@ class SFHBase(ABC):
         pass
 
     @classmethod
-    def evaluate_batch(cls, timegrid, params_2d):
-        """Evaluate the SFH for multiple parameter sets.
-        
+    def evaluate_batch_jax(cls, timegrid, params_2d):
+        """JAX-traceable batch evaluation of the SFR.
+
+        Required for NSS sampling, where the whole likelihood is JIT-compiled
+        by blackjax.  Built-in models implement it; custom subclasses must
+        override it to be usable with the NSS backend.
+
         Parameters
         ----------
-        timegrid : ndarray
-            SSP time grid.
-        params_2d : ndarray, shape (N, n_params)
-            Each row is one set of parameter values.
-        
+        timegrid : jax.Array, shape (n_age,)
+        params_2d : jax.Array, shape (N, n_params)
+
         Returns
         -------
-        sfr : ndarray, shape (N, len(timegrid))
+        sfr : jax.Array, shape (N, n_age)
         """
-        results = []
-        for row in params_2d:
-            kwargs = dict(zip(cls.param_names, row))
-            sfh = cls(**kwargs)
-            results.append(sfh.evaluate(timegrid))
-        return np.array(results)
+        raise NotImplementedError(
+            f"{cls.__name__} does not implement evaluate_batch_jax; "
+            "NSS sampling requires a JAX-traceable SFH model."
+        )
 
 
 class DelayedExponentialSFH(SFHBase):
     """Delayed exponentially declining SFH.
 
-        SFR(t) = 0                          ,  t <= t0
+        SFR(t) = 0                             ,  t <= t0
         SFR(t) = (t - t0) * exp(-(t - t0)/tau) ,  t > t0
 
-    where t is SSP time (0 = early universe, max = present),
+    where t = max(timegrid) - timegrid (cosmic time since the Big Bang),
     t0 is the formation start time, and tau is the decay timescale.
     """
 
@@ -87,40 +86,80 @@ class DelayedExponentialSFH(SFHBase):
     param_names = ["t0", "tau"]
     default_priors = {}  # Set at module level below
 
-    def __init__(self, t0, tau, age_universe=14.0):
-        self.t0, self.tau, self.age_universe = float(t0), float(tau), float(age_universe)
+    def __init__(self, t0, tau):
+        self.t0, self.tau = float(t0), float(tau)
 
     def evaluate(self, timegrid):
         t = np.max(timegrid) - timegrid
         dt = t - self.t0
-        sfr = np.where(dt > 0, dt * np.exp(-dt / self.tau), 0.0)
-        sfr[timegrid > self.age_universe] = 0.0
-        return sfr
+        return np.where(dt > 0, dt * np.exp(-dt / self.tau), 0.0)
+
+    @classmethod
+    def evaluate_batch_jax(cls, timegrid, params_2d):
+        t0 = params_2d[:, 0][:, None]     # param_names order: ["t0", "tau"]
+        tau = params_2d[:, 1][:, None]
+        t = jnp.max(timegrid) - timegrid
+        dt = t[None, :] - t0
+        return jnp.where(dt > 0, dt * jnp.exp(-dt / tau), 0.0)
 
     def __repr__(self):
         return f"DelayedExpSFH(t0={self.t0:.2f}, tau={self.tau:.2f})"
 
+
+class DoublePowerLawSFH(SFHBase):
+    """Double power-law SFH.
+
+        SFR(t) = 1 / ( (t/tau)^alpha + (t/tau)^(-beta) )
+
+    where t = max(timegrid) - timegrid (cosmic time since the Big Bang), and
+    tau, alpha, beta are free parameters.
+    """
+
+    n_params = 3
+    param_names = ["tau", "alpha", "beta"]
+    default_priors = {}  # Set at module level below
+
+    def __init__(self, tau, alpha, beta):
+        self.tau = float(tau)
+        self.alpha = float(alpha)
+        self.beta = float(beta)
+
+    def evaluate(self, timegrid):
+        # Extreme posterior samples (large beta) can overflow x**(-beta); the
+        # resulting inf yields SFR = 0, which is the intended behaviour.
+        with np.errstate(over="ignore", invalid="ignore"):
+            t = np.max(timegrid) - timegrid
+            t = np.where(t <= 0, 1e-10, t)
+            x = t / self.tau
+            return 1.0 / (x ** self.alpha + x ** (-self.beta))
+
     @classmethod
-    def evaluate_batch(cls, timegrid, params_2d):
-        """Vectorized override — bit-identical to the generic SFHBase loop.
+    def evaluate_batch_jax(cls, timegrid, params_2d):
+        tau = params_2d[:, 0][:, None]
+        alpha = params_2d[:, 1][:, None]
+        beta = params_2d[:, 2][:, None]
+        t = jnp.max(timegrid) - timegrid
+        t = jnp.where(t <= 0, 1e-10, t)
+        x = t[None, :] / tau
+        return 1.0 / (x ** alpha + x ** (-beta))
 
-        Like the generic loop, this uses the default ``age_universe=14.0``
-        (the batch API cannot carry per-row constructor kwargs).
-        """
-        params_2d = np.atleast_2d(np.asarray(params_2d, dtype=float))
-        t0 = params_2d[:, 0][:, None]   # param_names order: ["t0", "tau"]
-        tau = params_2d[:, 1][:, None]
-        t = np.max(timegrid) - timegrid
-        dt = t[None, :] - t0
-        sfr = np.where(dt > 0, dt * np.exp(-dt / tau), 0.0)
-        sfr = np.where(timegrid[None, :] > 14.0, 0.0, sfr)
-        return sfr
+    def __repr__(self):
+        return (f"DoublePowerLawSFH(tau={self.tau:.2f}, "
+                f"alpha={self.alpha:.2f}, beta={self.beta:.2f})")
 
 
-# Set default priors after class definition (lazy import to avoid circular deps)
-from .priors import UniformPrior, LogUniformPrior, GaussianPrior
+# Set default priors after class definitions (lazy import to avoid circular deps)
+from .priors import UniformPrior, LogUniformPrior, GaussianPrior  # noqa: E402
+
 DelayedExponentialSFH.default_priors = {
     "logZsun": UniformPrior(-2.5, 0.5),
     "t0":      UniformPrior(0.1, 13.5),
     "tau":     LogUniformPrior(0.1, 10.0),
+}
+
+DoublePowerLawSFH.default_priors = {
+    "logZsun": UniformPrior(-2.5, 0.5),
+    "tau":     LogUniformPrior(0.1, 13.0),
+    "alpha":   LogUniformPrior(0.1, 1000.0),
+    "beta":    LogUniformPrior(0.1, 1000.0),
 }

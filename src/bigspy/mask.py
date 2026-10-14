@@ -1,12 +1,11 @@
-"""Emission line mask definitions for spectral fitting.
+"""Emission-line mask definitions for spectral fitting.
 
-Provides a detailed emission line list (~50 lines) from the original BIGS
-SpecFit.py Emlines module.
+``EMISSION_LINES`` lists ~50 rest-frame wavelength windows around common
+emission lines; pixels inside these windows are excluded from the fit.
 """
 
-# ── Detailed emission line list (Å) ──────────────────────────────────
-# From BIGS SpecFit.py / Emlines: individual line centers ± FWHM equivalent
-# Format: label -> [lo, hi] in rest-frame Angstrom
+# ── Emission line list (rest-frame Angstrom) ────────────────────────
+# Format: label -> [lo, hi]
 EMISSION_LINES = {
     # Near-UV / Blue
     "l3710": [3710, 3737],
@@ -104,7 +103,7 @@ def build_emission_mask(wave, regions=None):
 
 
 def mask_emlines_detailed(wave, mask_in, mask_add=None):
-    """Full detailed emission line masking (mimics original BIGS SpecFit logic).
+    """Mask emission-line regions on a wavelength grid.
 
     Parameters
     ----------
@@ -113,12 +112,13 @@ def mask_emlines_detailed(wave, mask_in, mask_add=None):
     mask_in : ndarray of bool
         Input mask (True = good pixel).
     mask_add : dict, optional
-        Additional mask regions e.g. {'my_line': [w1, w2]}.
+        Extra regions to mask on top of ``EMISSION_LINES``,
+        e.g. ``{'my_line': [w1, w2]}``.
 
     Returns
     -------
     mask_out : ndarray of bool
-        Updated mask with emission lines masked.
+        Updated mask with emission lines set to False.
     lines : dict
         The emission line table used.
     """
@@ -134,3 +134,38 @@ def mask_emlines_detailed(wave, mask_in, mask_add=None):
         mask_out[(wave >= lo) & (wave <= hi)] = False
 
     return mask_out, lines
+
+
+# ── Night-sky lines (air wavelengths, Angstrom) ───────────────────
+# Only the strongest optical sky line is masked (subtraction residuals
+# can be significant).  Sky lines sit at fixed OBSERVED wavelengths,
+# so the mask windows are redshift-dependent (see sky_line_windows).
+SKY_LINES_AIR = {"[OI] 5577": 5577.34}
+
+
+def sky_line_windows(z, width=800.0):
+    """Rest-frame wavelength windows around night-sky lines.
+
+    Parameters
+    ----------
+    z : float
+        Galaxy redshift; sky-line wavelengths are converted from air to
+        vacuum and shifted to the rest frame with (1 + z).
+    width : float
+        Half-width of each window in km/s (default 800).
+
+    Returns
+    -------
+    list of (lo, hi)
+        Rest-frame windows in Angstrom (vacuum).
+    """
+    from .constants import C_LIGHT
+    from .utils import air_to_vacuum_wave
+
+    windows = []
+    for lam_air in SKY_LINES_AIR.values():
+        lam_vac = float(air_to_vacuum_wave(lam_air))
+        half = lam_vac * width / C_LIGHT     # observed-frame half-width (A)
+        windows.append(((lam_vac - half) / (1.0 + z),
+                        (lam_vac + half) / (1.0 + z)))
+    return windows
